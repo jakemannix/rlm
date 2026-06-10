@@ -35,4 +35,12 @@ say "eval HELD-OUT real entities — PARAPHRASE query (A1b / content-addressable
 python scripts/memory/eval_acceptance.py --skill runs/skill_real.pt \
   --real-corpus --real-split eval --squad --paraphrase --facts 64 --a2-facts 32 \
   --a3 1,2,4,8,16,32 --out runs/acc_real_paraphrase.json
-say "MILESTONE-3 #1 DONE"
+
+# items 3-5: baselines (floor / in-context ceiling / retrieval), generative EM, scale+persistence
+say "items 3-5 — baselines + generative + scale (VERBATIM)"
+python scripts/memory/eval_real.py --skill runs/skill_real.pt --squad \
+  --baseline-facts 64 --scale 8,16,32,64,128,256 --out runs/real_eval_verbatim.json
+say "items 3-5 — baselines + generative + scale (PARAPHRASE / A1b)"
+python scripts/memory/eval_real.py --skill runs/skill_real.pt --squad --paraphrase \
+  --baseline-facts 64 --scale 8,16,32,64,128,256 --out runs/real_eval_paraphrase.json
+say "MILESTONE-3 DONE"
