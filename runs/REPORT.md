@@ -84,3 +84,19 @@ C1 base vs `--whiten` (A3 top5 vs N): base 1/1/1/0.50/0.38/0.19/0.12/0.02; white
 - **Why:** `diagnose_keys --skill skill_whiten` shows the TRAINED whitened keys are now *well-spread* — **participation ratio 10→46, mean |cos| 0.77→0.10**. So whitening + training **solved bottleneck #1 (key collision)**.
 - **But A3 still collapses → bottleneck #2:** the A3 multifact eval streams N facts through ONE session with filler, and the lr/forget **gate selectivity over long sessions was never trained** (multifact capped at k≤6 — "the data never asked"). C0's simulator did direct writes (no filler/gates/streaming) so it modeled only geometry and over-predicted.
 - **C2 (`pressure_whiten`: multifact k≤32 + same-relation hard negatives + 2-layer encoder + whiten) targets exactly bottleneck #2** — running now. If A3 still stalls after C2, the residual is the in-session-write vs standalone-query context mismatch.
+
+### Milestone-3 (real text) — BUILT, pending GPU (2026-06-10)
+All five items implemented + committed (CPU); run on the L4 via `scripts/memory/real_text_sweep.sh`
+once C2 frees the GPU:
+- **#1 real-corpus recall (distribution shift):** `RealCorpusGenerator` (subclasses EpisodeGenerator,
+  overrides make_fact → real entity/statement/question/answer; SQuAD via `load_squad_records` or 40
+  bundled facts), strict **held-out-by-entity** split; `build_cache --real-corpus`, train on it.
+- **#2 A1b content-addressable:** the fact's paraphrase is a natural **question**; `eval_acceptance
+  --paraphrase` / `eval_real --paraphrase` query with it, not the verbatim prefix.
+- **#3 baselines** (`eval_real.py`): no-memory floor, in-context ceiling, embed+kNN retrieval@1 vs memory.
+- **#4 generative EM** (generate_greedy, gold∈output) + neutral-KL **no-regression** at scale.
+- **#5 scale+persistence:** ingest the held-out bank one fact at a time, **save→reload between each**
+  (deployment regime), query ALL-so-far at checkpoints, report **worst-case** frac_top5 + min_lift to N=256.
+Stats protocol: fixed seeded held-out bank (distinct entities), single base; the harness reports the
+worse-side metrics. **Highest-risk question (per the goal): does a real-text-meta-trained skill recall
+held-out real entities, or does the PR≈10 / cos-0.77 Gemma answer-prefix geometry cap it post-whitening.**
