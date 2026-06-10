@@ -168,13 +168,21 @@ class DeltaRuleStore(nn.Module):
         keys: Tensor,  # [B, T, d_k]  (un-normalised; normalised here)
         values: Tensor,  # [B, T, d_v]
         state: StoreState,
-        write_mask: Tensor | None = None,  # [B, T] in [0,1]; multiplies the lr gate
+        write_mask: Tensor | None = None,  # [B, T] in [0,1]; gates the WHOLE update
+        stats: dict | None = None,  # optional out-dict: per-write gate means (diagnostics)
     ) -> StoreState:
         """Stream (keys, values) into the store; returns the new state.
 
         Differentiable w.r.t. gate parameters and w.r.t. ``keys``/``values`` (and
         hence the upstream encoders) via BPTT over chunks.  The inner loop itself
         is closed-form — no ``torch.func``.
+
+        ``write_mask`` gates the *entire* chunk update, not just the lr gate: a
+        fully-masked chunk (padding, or filler under fact-only writes) is an exact
+        no-op — no forget decay, no momentum deposit — so selectivity actually
+        preserves earlier facts (the cross-session-persistence requirement;
+        without this, the per-chunk forget factor erodes the store on filler even
+        where the mask said "do not write").
         """
         cfg = self.cfg
         B, T, _ = keys.shape
@@ -191,24 +199,51 @@ class DeltaRuleStore(nn.Module):
             theta = theta * write_mask
 
         M, S = state.M, state.S
+        eta_acc = M.new_zeros(())
+        alpha_acc = M.new_zeros(())
+        n_chunks = 0
         for start in range(0, T, cfg.chunk_size):
             end = min(start + cfg.chunk_size, T)
             kc = k[:, start:end]  # [B, c, d_k]
             vc = v[:, start:end]  # [B, c, d_v]
             tc = theta[:, start:end]  # [B, c]
+            wc = (
+                write_mask[:, start:end] if write_mask is not None else tc.new_ones(tc.shape)
+            )  # [B, c]
+            active = wc.amax(dim=1, keepdim=True)  # [B,1] — 1 if the chunk has any written token
+            denom = wc.sum(dim=1, keepdim=True).clamp(min=1.0)  # [B,1]
 
             # Chunk-wise: every token in the chunk sees start-of-chunk M.
             pred = torch.einsum("bvk,bck->bcv", M, kc)
             err = pred - vc  # [B, c, d_v]
-            # Gated, 1/d_k-scaled gradient: θ=1 ⇒ exact one-shot write.
+            # Gated, 1/d_k-scaled gradient: θ=1 ⇒ exact one-shot write.  (tc is 0
+            # on masked tokens, so G already excludes them.)
             G = torch.einsum("bcv,bck->bvk", err * tc.unsqueeze(-1), kc) / cfg.d_k
 
-            pooled = kc.mean(dim=1)  # [B, d_k]
+            # Mask-weighted pool so masked tokens don't shift the chunk's gates.
+            pooled = (kc * wc.unsqueeze(-1)).sum(dim=1) / denom  # [B, d_k]
             eta = torch.sigmoid(self.momentum_gate(pooled)) * cfg.max_momentum  # [B,1]
-            alpha = torch.sigmoid(self.forget_gate(pooled)) * cfg.max_forget  # [B,1]
+            alpha = torch.sigmoid(self.forget_gate(pooled)) * cfg.max_forget * active  # [B,1]
 
-            S = eta.unsqueeze(-1) * S - G
+            # ``active`` zeroes forget + momentum deposit on a fully-masked chunk:
+            # M = 1·M + (0·S − 0) = M (exact no-op).
+            S = (eta * active).unsqueeze(-1) * S - G
             M = (1.0 - alpha).unsqueeze(-1) * M + S
+
+            if stats is not None:
+                eta_acc = eta_acc + (eta * active).mean()
+                alpha_acc = alpha_acc + alpha.mean()
+                n_chunks += 1
+
+        if stats is not None:
+            wsum = (
+                write_mask.sum().clamp(min=1.0)
+                if write_mask is not None
+                else torch.tensor(float(theta.numel()))
+            )
+            stats["lr_gate_mean"] = float(theta.sum() / wsum)  # mean over written tokens
+            stats["momentum_mean"] = float(eta_acc / max(n_chunks, 1))
+            stats["forget_mean"] = float(alpha_acc / max(n_chunks, 1))
 
         return StoreState(M, S)
 
@@ -238,11 +273,15 @@ class DeltaRuleStore(nn.Module):
             raise ValueError(f"unknown store payload format: {payload.get('format')!r}")
         M = payload["M"].to(device=device or self.lr_gate.weight.device, dtype=torch.float32)
         if M.dim() != 3 or M.shape[1] != self.cfg.d_v or M.shape[2] != self.cfg.d_k:
-            raise ValueError(f"persisted M shape {tuple(M.shape)} != cfg ({self.cfg.d_v},{self.cfg.d_k})")
+            raise ValueError(
+                f"persisted M shape {tuple(M.shape)} != cfg ({self.cfg.d_v},{self.cfg.d_k})"
+            )
         return StoreState(M, torch.zeros_like(M))
 
     def save_state(self, state: StoreState, path: str) -> None:
         torch.save(self.state_dict_for_persistence(state), path)
 
     def load_state(self, path: str, device=None) -> StoreState:
-        return self.load_persisted_state(torch.load(path, map_location="cpu", weights_only=True), device)
+        return self.load_persisted_state(
+            torch.load(path, map_location="cpu", weights_only=True), device
+        )

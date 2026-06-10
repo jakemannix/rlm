@@ -51,15 +51,19 @@ class ShardPool:
         for p in self.paths[1:ram_shards]:
             self.pool.append(torch.load(p, weights_only=False))
         self.next_path = ram_shards
-        print(f"pool: {sum(len(s) for s in self.pool)} episodes in RAM "
-              f"({len(self.pool)}/{len(self.paths)} shards), {len(self.eval_episodes)} held out")
+        print(
+            f"pool: {sum(len(s) for s in self.pool)} episodes in RAM "
+            f"({len(self.pool)}/{len(self.paths)} shards), {len(self.eval_episodes)} held out"
+        )
 
     def rotate(self) -> None:
         if len(self.paths) <= len(self.pool):
             return
         slot = self.rng.randrange(1, len(self.pool)) if len(self.pool) > 1 else 0
         self.pool[slot] = torch.load(self.paths[self.next_path], weights_only=False)
-        self.next_path = (self.next_path + 1) % len(self.paths) or 1  # skip shard 0 (eval lives there)
+        self.next_path = (self.next_path + 1) % len(
+            self.paths
+        ) or 1  # skip shard 0 (eval lives there)
 
     def sample(self, n: int) -> list[dict]:
         shard = self.rng.choice(self.pool)
@@ -77,11 +81,33 @@ def main() -> None:
     ap.add_argument("--d-k", type=int, default=512)
     ap.add_argument("--encoder-layers", type=int, default=1)
     ap.add_argument("--chunk-size", type=int, default=4)
-    ap.add_argument("--fact-only-write-steps", type=int, default=0,
-                    help="curriculum: write only fact spans for the first N steps")
+    ap.add_argument(
+        "--fact-only-write-steps",
+        type=int,
+        default=0,
+        help="curriculum: write only fact spans for the first N steps",
+    )
     ap.add_argument("--ram-shards", type=int, default=8)
     ap.add_argument("--rotate-every", type=int, default=200)
     ap.add_argument("--eval-episodes", type=int, default=256)
+    ap.add_argument(
+        "--recall-warmup-steps",
+        type=int,
+        default=300,
+        help="sample only CE-bearing (recall/multifact/multisession) episodes for the first N "
+        "steps, so the read/lr gates can't collapse before binding is learned (§5.2)",
+    )
+    ap.add_argument(
+        "--kl-warmup-steps", type=int, default=500, help="hold lambda_kl=0 for the first N steps"
+    )
+    ap.add_argument(
+        "--kl-ramp-steps",
+        type=int,
+        default=500,
+        help="linearly ramp lambda_kl to target over N steps",
+    )
+    ap.add_argument("--checkpoint-every", type=int, default=500)
+    ap.add_argument("--resume", action="store_true", help="resume from <out>.ckpt.pt if present")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
@@ -89,35 +115,81 @@ def main() -> None:
     cache = Path(args.cache)
     head = torch.load(cache / "head.pt", weights_only=False)
     W = head["W"].to(torch.float32)
-    print(f"head: d={head['d_model']} vocab={W.shape[0]} softcap={head['softcap']} from {head['model_name']}")
+    print(
+        f"head: d={head['d_model']} vocab={W.shape[0]} softcap={head['softcap']} from {head['model_name']}"
+    )
 
     rng = random.Random(args.seed)
     pool = ShardPool(cache, args.ram_shards, args.eval_episodes, rng)
 
-    skill = MemorySkill(SkillConfig(
-        d_model=head["d_model"], d_k=args.d_k, encoder_layers=args.encoder_layers,
-        store=LinearStoreConfig(chunk_size=args.chunk_size),
-    ))
+    skill = MemorySkill(
+        SkillConfig(
+            d_model=head["d_model"],
+            d_k=args.d_k,
+            encoder_layers=args.encoder_layers,
+            store=LinearStoreConfig(chunk_size=args.chunk_size),
+        )
+    )
     cfg = TrainerConfig(
-        lr=args.lr, steps=args.steps, batch_size=args.batch_size, lambda_kl=args.lambda_kl,
-        fact_only_write_steps=args.fact_only_write_steps, device=args.device, seed=args.seed,
+        lr=args.lr,
+        steps=args.steps,
+        batch_size=args.batch_size,
+        lambda_kl=args.lambda_kl,
+        fact_only_write_steps=args.fact_only_write_steps,
+        kl_warmup_steps=args.kl_warmup_steps,
+        kl_ramp_steps=args.kl_ramp_steps,
+        checkpoint_every=args.checkpoint_every,
+        device=args.device,
+        seed=args.seed,
     )
     trainer = EpisodeTrainer(skill, W, cfg, logit_softcap=head["softcap"])
 
-    step = {"n": 0}
+    step = {"n": trainer.step_idx}
 
     def sample_batch() -> dict:
         step["n"] += 1
         if step["n"] % args.rotate_every == 0:
             pool.rotate()
-        eps = [materialize(e, W) for e in pool.sample(args.batch_size)]
+        recall_only = step["n"] <= args.recall_warmup_steps
+        raw = pool.sample(args.batch_size * (2 if recall_only else 1))
+        if recall_only:  # CE-bearing only, so binding forms before abstention pressure enters
+            raw = [e for e in raw if e["query"]["ce_in_loss"]]
+            while len(raw) < args.batch_size:
+                raw += [e for e in pool.sample(args.batch_size * 2) if e["query"]["ce_in_loss"]]
+        eps = [materialize(e, W) for e in raw[: args.batch_size]]
         return collate(eps, args.device)
 
     eval_batch = collate([materialize(e, W) for e in pool.eval_episodes], args.device)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    trainer.train(sample_batch, eval_batch=eval_batch, log_path=str(out.with_suffix(".log.jsonl")))
+    ckpt_path = out.with_suffix(".ckpt.pt")
+    if args.resume and ckpt_path.exists():
+        ck = torch.load(ckpt_path, map_location=args.device, weights_only=False)
+        skill.load_state_dict(ck["skill"])
+        trainer.opt.load_state_dict(ck["opt"])
+        trainer.step_idx = ck["step"]
+        step["n"] = ck["step"]
+        rng.setstate(ck["rng"])
+        print(f"resumed from step {trainer.step_idx}/{args.steps}")
+
+    def checkpoint_cb(s: int) -> None:
+        torch.save(
+            {
+                "skill": skill.state_dict(),
+                "opt": trainer.opt.state_dict(),
+                "step": s,
+                "rng": rng.getstate(),
+            },
+            ckpt_path,
+        )
+
+    trainer.train(
+        sample_batch,
+        eval_batch=eval_batch,
+        log_path=str(out.with_suffix(".log.jsonl")),
+        checkpoint_cb=checkpoint_cb,
+    )
 
     final = trainer.evaluate(eval_batch)
     skill.save(str(out))

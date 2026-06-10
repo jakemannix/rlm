@@ -25,27 +25,45 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--episodes", type=int, default=20_000)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--paraphrase-prob", type=float, default=0.0,
-                    help="0.0 for the A1-verbatim ladder; raise for the A1b arm")
-    ap.add_argument("--mix", default=None, help='JSON, e.g. \'{"recall":0.6,"abstain":0.2,"control":0.2}\'')
+    ap.add_argument(
+        "--paraphrase-prob",
+        type=float,
+        default=0.0,
+        help="0.0 for the A1-verbatim ladder; raise for the A1b arm",
+    )
+    ap.add_argument(
+        "--mix", default=None, help='JSON, e.g. \'{"recall":0.6,"abstain":0.2,"control":0.2}\''
+    )
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--shard-size", type=int, default=1_000)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dtype", default="bfloat16")
+    ap.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="rebuild even if a (mismatched) cache exists at --out; deletes its stale artifacts",
+    )
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=getattr(torch, args.dtype)).to(args.device).eval()
+    model = (
+        AutoModelForCausalLM.from_pretrained(args.model, dtype=getattr(torch, args.dtype))
+        .to(args.device)
+        .eval()
+    )
     build_cache(
-        model, tok, args.out,
+        model,
+        tok,
+        args.out,
         n_episodes=args.episodes,
         mix=json.loads(args.mix) if args.mix else None,
         seed=args.seed,
         paraphrase_prob=args.paraphrase_prob,
         batch_size=args.batch_size,
         shard_size=args.shard_size,
+        overwrite=args.overwrite,
     )
 
 

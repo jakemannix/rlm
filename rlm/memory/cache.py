@@ -98,9 +98,15 @@ def tokenize_episode(ep: EpisodeText, tok, bos_id: int | None) -> TokenizedEpiso
         kl_mask[-1] = 0.0  # last position predicts beyond the sequence
 
     return TokenizedEpisode(
-        ep.episode_type, sessions, query_ids,
-        ce_pos, ce_tgt, ep.answer is not None,
-        kl_mask, probe_pos, probe_tgt,
+        ep.episode_type,
+        sessions,
+        query_ids,
+        ce_pos,
+        ce_tgt,
+        ep.answer is not None,
+        kl_mask,
+        probe_pos,
+        probe_tgt,
     )
 
 
@@ -181,14 +187,52 @@ def build_cache(
     batch_size: int = 16,
     shard_size: int = 1_000,
     dtype: torch.dtype = torch.float16,
+    overwrite: bool = False,
 ) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+
+    # Resume-by-completion / anti-clobber: a matching finished cache is skipped;
+    # a stale/mismatched one must be explicitly overwritten (else a re-run with
+    # fewer episodes would leave stale shards that train_skill silently mixes in).
+    existing = sorted(out.glob("shard_*.pt"))
+    meta_path = out / "meta.json"
+    if existing and meta_path.exists():
+        try:
+            m = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
+            m = {}
+        matches = (
+            m.get("n_episodes") == n_episodes
+            and m.get("seed") == seed
+            and m.get("paraphrase_prob") == paraphrase_prob
+            and m.get("mix") == mix
+        )
+        if matches and (out / "head.pt").exists():
+            print(
+                f"cache already complete at {out} ({m.get('n_episodes')} episodes); "
+                f"skipping (pass overwrite=True to rebuild)",
+                flush=True,
+            )
+            return
+    if (existing or meta_path.exists()) and not overwrite:
+        raise FileExistsError(
+            f"{out} already contains cache artifacts that don't match this config; pass "
+            f"--overwrite to rebuild (deletes stale shards/head.pt/meta.json) or choose a fresh --out"
+        )
+    if overwrite:
+        for p in [*existing, out / "head.pt", meta_path]:
+            p.unlink(missing_ok=True)
+
     device = next(model.parameters()).device
     W, softcap = get_head(model)
     torch.save(
-        {"W": W.detach().to(dtype).cpu(), "softcap": softcap, "d_model": W.shape[1],
-         "model_name": getattr(model.config, "name_or_path", "?")},
+        {
+            "W": W.detach().to(dtype).cpu(),
+            "softcap": softcap,
+            "d_model": W.shape[1],
+            "model_name": getattr(model.config, "name_or_path", "?"),
+        },
         out / "head.pt",
     )
 
@@ -234,8 +278,12 @@ def build_cache(
                     "sessions": sessions,
                     "query": {
                         "hn": qh.to(dtype),
-                        "ce_pos": te.ce_pos, "ce_tgt": te.ce_tgt, "ce_in_loss": te.ce_in_loss,
-                        "kl_mask": te.kl_mask, "probe_pos": te.probe_pos, "probe_tgt": te.probe_tgt,
+                        "ce_pos": te.ce_pos,
+                        "ce_tgt": te.ce_tgt,
+                        "ce_in_loss": te.ce_in_loss,
+                        "kl_mask": te.kl_mask,
+                        "probe_pos": te.probe_pos,
+                        "probe_tgt": te.probe_tgt,
                     },
                 }
             )
@@ -257,7 +305,15 @@ def build_cache(
         process(pending)
     flush()
     (out / "meta.json").write_text(
-        json.dumps({"n_episodes": n_episodes, "counts": counts, "seed": seed,
-                    "paraphrase_prob": paraphrase_prob, "mix": mix}, indent=2)
+        json.dumps(
+            {
+                "n_episodes": n_episodes,
+                "counts": counts,
+                "seed": seed,
+                "paraphrase_prob": paraphrase_prob,
+                "mix": mix,
+            },
+            indent=2,
+        )
     )
     print(f"done: {n_episodes} episodes → {out}", flush=True)

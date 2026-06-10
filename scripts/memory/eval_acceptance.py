@@ -34,7 +34,15 @@ NEUTRAL = (
 
 
 def recall_episode(gen: EpisodeGenerator, fact) -> EpisodeText:
-    return EpisodeText("recall", [gen.session_with_facts([fact])], fact.verbatim_prompt, fact.answer, None, [fact], fact)
+    return EpisodeText(
+        "recall",
+        [gen.session_with_facts([fact])],
+        fact.verbatim_prompt,
+        fact.answer,
+        None,
+        [fact],
+        fact,
+    )
 
 
 def mean(xs: list[float]) -> float:
@@ -63,18 +71,24 @@ def run_a1_a4(model, tok, skill, gen: EpisodeGenerator, n_facts: int, device: st
 
             mem_lift.append(r_same["first_token_lift_nats"])
             a4_lift.append(r["first_token_lift_nats"])
-            mem_top5.append(float(r["first_token_top5"]))
+            mem_top5.append(float(r_same["first_token_top5"]))  # A1 = in-session, not post-reload
             empty_lift.append(r0["first_token_lift_nats"])
             wrong_lift.append(rw["first_token_lift_nats"])
 
     a1 = {
-        "mean_first_lift_nats": mean(a4_lift),
+        "mean_first_lift_nats": mean(
+            mem_lift
+        ),  # in-session lift (A1); A4 measures the reload retention
         "top5_frac": mean(mem_top5),
         "empty_control_lift": mean(empty_lift),
         "wrong_fact_control_lift": mean(wrong_lift),
     }
-    a1["pass"] = (a1["mean_first_lift_nats"] >= 3.0 and a1["top5_frac"] >= 0.8
-                  and abs(a1["empty_control_lift"]) < 1e-6 and abs(a1["wrong_fact_control_lift"]) <= 0.5)
+    a1["pass"] = (
+        a1["mean_first_lift_nats"] >= 3.0
+        and a1["top5_frac"] >= 0.8
+        and abs(a1["empty_control_lift"]) < 1e-6
+        and abs(a1["wrong_fact_control_lift"]) <= 0.5
+    )
     a4 = {
         "in_session_lift": mean(mem_lift),
         "after_reload_lift": mean(a4_lift),
@@ -99,7 +113,9 @@ def run_a2(model, tok, skill, gen: EpisodeGenerator, n: int, device: str) -> dic
             r_mem = sess.score_answer(other.verbatim_prompt, other.answer)
         unchanged.append(float(abs(r_mem["first_token_lift_nats"]) <= 0.5))
     a2 = {"neutral_kl_nats_per_tok": mean(kls), "unrelated_query_unchanged_frac": mean(unchanged)}
-    a2["pass"] = a2["neutral_kl_nats_per_tok"] <= 0.02 and a2["unrelated_query_unchanged_frac"] >= 0.9
+    a2["pass"] = (
+        a2["neutral_kl_nats_per_tok"] <= 0.02 and a2["unrelated_query_unchanged_frac"] >= 0.9
+    )
     return a2
 
 
@@ -108,7 +124,9 @@ def run_a3(model, tok, skill, gen: EpisodeGenerator, ns: list[int], device: str)
     for n in ns:
         facts = [gen.make_fact() for _ in range(n)]
         sess = MemorySession(model, tok, skill, device=device)
-        sess.ingest_episode(EpisodeText("multifact", [gen.session_with_facts(facts)], "", None, None, facts, None))
+        sess.ingest_episode(
+            EpisodeText("multifact", [gen.session_with_facts(facts)], "", None, None, facts, None)
+        )
         lifts, top5 = [], []
         for f in facts:
             r = sess.score_answer(f.verbatim_prompt, f.answer)
@@ -116,7 +134,9 @@ def run_a3(model, tok, skill, gen: EpisodeGenerator, ns: list[int], device: str)
             top5.append(float(r["first_token_top5"]))
         point = {"n_facts": n, "mean_first_lift_nats": mean(lifts), "top5_frac": mean(top5)}
         curve.append(point)
-        print(f"A3 n={n:>4}: lift {point['mean_first_lift_nats']:.2f} nats, top5 {point['top5_frac']:.2f}")
+        print(
+            f"A3 n={n:>4}: lift {point['mean_first_lift_nats']:.2f} nats, top5 {point['top5_frac']:.2f}"
+        )
     return curve
 
 
@@ -136,14 +156,20 @@ def main() -> None:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=getattr(torch, args.dtype)).to(args.device).eval()
+    model = (
+        AutoModelForCausalLM.from_pretrained(args.model, dtype=getattr(torch, args.dtype))
+        .to(args.device)
+        .eval()
+    )
     skill = MemorySkill.load(args.skill, device=args.device)
     gen = EpisodeGenerator(seed=args.seed)
 
     report = run_a1_a4(model, tok, skill, gen, args.facts, args.device)
     report["A2"] = run_a2(model, tok, skill, gen, args.a2_facts, args.device)
     if args.a3:
-        report["A3_curve"] = run_a3(model, tok, skill, gen, [int(x) for x in args.a3.split(",")], args.device)
+        report["A3_curve"] = run_a3(
+            model, tok, skill, gen, [int(x) for x in args.a3.split(",")], args.device
+        )
 
     for name in ("A1", "A2", "A4"):
         print(f"{name}: {'PASS' if report[name]['pass'] else 'FAIL'}  {json.dumps(report[name])}")

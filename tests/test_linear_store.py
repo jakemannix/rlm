@@ -108,6 +108,7 @@ def test_unselective_writes_erode_like_exp_m_theta_over_d():
     of an earlier association — and a write_mask (selectivity) prevents it.
     This is why the lr gate matters for persistence (design doc §5)."""
     import math
+
     torch.manual_seed(0)
     d_k, m = 128, 100
     store = make_store(d_k=d_k, d_v=16, chunk_size=1)
@@ -122,7 +123,9 @@ def test_unselective_writes_erode_like_exp_m_theta_over_d():
     retention = float((store.read(k0, eroded) * baseline).sum() / baseline.pow(2).sum())
     alpha0 = float(torch.sigmoid(torch.tensor(-5.0))) * store.cfg.max_forget
     predicted = math.exp(-m * 1.0 / d_k) * (1 - alpha0) ** m
-    assert abs(retention - predicted) < 0.25, f"retention {retention:.2f} vs predicted {predicted:.2f}"
+    assert abs(retention - predicted) < 0.25, (
+        f"retention {retention:.2f} vs predicted {predicted:.2f}"
+    )
 
     protected = store.write(keys, vals, state.clone(), write_mask=torch.zeros(1, m))
     retention_sel = float((store.read(k0, protected) * baseline).sum() / baseline.pow(2).sum())
@@ -149,3 +152,44 @@ def test_detach_and_zeroed_views():
     assert torch.all(z.M == 0) and state.M.abs().sum() > 0
     d = state.detach()
     assert not d.M.requires_grad
+
+
+def test_masked_filler_does_not_erode_stored_fact():
+    """Regression: write_mask must gate the WHOLE chunk update, not just lr.
+
+    A fact is written, then masked filler is streamed through with a strong
+    forget gate; the fact must be retained because a fully-masked chunk is an
+    exact no-op. Before the fix the per-chunk forget decay applied on every
+    chunk regardless of the mask, eroding cross-session memory on filler.
+    """
+    store = make_store(d_k=64, d_v=64, chunk_size=4, max_forget=0.5)
+    with torch.no_grad():
+        store.forget_gate.bias.fill_(8.0)  # sigmoid(8)~1 -> alpha~=max_forget on any ACTIVE chunk
+    state = store.init_state(1)
+    k0, v0 = torch.randn(1, 1, 64), torch.randn(1, 1, 64)
+    state = store.write(k0, v0, state, write_mask=torch.ones(1, 1))
+    target = store.read(k0, state)
+
+    state = store.write(
+        torch.randn(1, 40, 64), torch.randn(1, 40, 64), state, write_mask=torch.zeros(1, 40)
+    )  # 10 fully-masked chunks -> must be a no-op
+    after = store.read(k0, state)
+    retention = (after.norm() / target.norm().clamp(min=1e-9)).item()
+    assert retention > 0.9, f"masked filler eroded the fact (retention {retention:.3f})"
+    assert torch.allclose(after, target, atol=1e-4)
+
+
+def test_write_stats_surface_gate_means():
+    """write() populates an optional stats dict with the write-side gate means."""
+    store = make_store(d_k=32, d_v=32, chunk_size=2)
+    state = store.init_state(1)
+    stats: dict = {}
+    store.write(
+        torch.randn(1, 6, 32),
+        torch.randn(1, 6, 32),
+        state,
+        write_mask=torch.ones(1, 6),
+        stats=stats,
+    )
+    assert {"lr_gate_mean", "momentum_mean", "forget_mean"} <= set(stats)
+    assert 0.0 <= stats["lr_gate_mean"] <= store.cfg.max_lr

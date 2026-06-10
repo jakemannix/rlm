@@ -66,8 +66,15 @@ class TrainerConfig:
     # Curriculum: write only fact-span tokens for the first N steps (lets the
     # binding form before the lr gate must learn selectivity on filler).
     fact_only_write_steps: int = 0
+    # KL/abstention is held at 0 for ``kl_warmup_steps`` then linearly ramped to
+    # ``lambda_kl`` over ``kl_ramp_steps`` — without this, the read/lr gates
+    # collapse to "never write/read" to satisfy KL before binding is learned
+    # (design doc §5.2; the primary gate-collapse mitigation).
+    kl_warmup_steps: int = 500
+    kl_ramp_steps: int = 500
     log_every: int = 25
     eval_every: int = 200
+    checkpoint_every: int = 500
     device: str = "cpu"
     seed: int = 0
 
@@ -111,10 +118,14 @@ def collate(episodes: list[dict], device: str | torch.device, dtype=torch.float3
             }
         )
     q_hn = pad_stack([ep["query"]["hn"].to(dtype) for ep in episodes]).to(device)
-    q_mask = pad_stack(
-        [torch.ones(ep["query"]["hn"].shape[0], 1) for ep in episodes]
-    ).squeeze(-1).to(device)
-    pmax = max(max(ep["query"]["ce_pos"].shape[0], ep["query"]["probe_pos"].shape[0], 1) for ep in episodes)
+    q_mask = (
+        pad_stack([torch.ones(ep["query"]["hn"].shape[0], 1) for ep in episodes])
+        .squeeze(-1)
+        .to(device)
+    )
+    pmax = max(
+        max(ep["query"]["ce_pos"].shape[0], ep["query"]["probe_pos"].shape[0], 1) for ep in episodes
+    )
 
     def pad_idx(key: str) -> Tensor:
         rows = []
@@ -130,8 +141,14 @@ def collate(episodes: list[dict], device: str | torch.device, dtype=torch.float3
             "mask": q_mask,
             "ce_pos": pad_idx("ce_pos"),
             "ce_tgt": pad_idx("ce_tgt"),
-            "ce_in_loss": torch.tensor([bool(ep["query"]["ce_in_loss"]) for ep in episodes], device=device),
-            "kl_mask": pad_stack([ep["query"]["kl_mask"].to(torch.float32).unsqueeze(-1) for ep in episodes]).squeeze(-1).to(device),
+            "ce_in_loss": torch.tensor(
+                [bool(ep["query"]["ce_in_loss"]) for ep in episodes], device=device
+            ),
+            "kl_mask": pad_stack(
+                [ep["query"]["kl_mask"].to(torch.float32).unsqueeze(-1) for ep in episodes]
+            )
+            .squeeze(-1)
+            .to(device),
             "probe_pos": pad_idx("probe_pos"),
             "probe_tgt": pad_idx("probe_tgt"),
         },
@@ -154,7 +171,9 @@ class EpisodeTrainer:
         self.W = head_weight.detach().to(cfg.device, torch.float32)
         self.W.requires_grad_(False)
         self.softcap = logit_softcap
-        self.opt = torch.optim.AdamW(self.skill.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        self.opt = torch.optim.AdamW(
+            self.skill.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
+        )
         self.step_idx = 0
         self.history: list[dict] = []
 
@@ -165,15 +184,30 @@ class EpisodeTrainer:
             z = self.softcap * torch.tanh(z / self.softcap)
         return z
 
-    def run_memory(self, batch: dict, fact_only_write: bool, zero_store: bool = False):
+    def effective_lambda_kl(self) -> float:
+        """0 during recall-only warmup, then a linear ramp up to ``lambda_kl``."""
+        s, w, r = self.step_idx, self.cfg.kl_warmup_steps, max(self.cfg.kl_ramp_steps, 1)
+        if s < w:
+            return 0.0
+        return self.cfg.lambda_kl * min(1.0, (s - w) / r)
+
+    def run_memory(
+        self, batch: dict, fact_only_write: bool, zero_store: bool = False, want_stats: bool = False
+    ):
         """Write all sessions in order (state carried across), read on the query."""
         B = batch["query"]["hn"].shape[0]
         state = self.skill.init_state(B, device=self.cfg.device)
+        wstats: dict = {}
         if not zero_store:
             for sess in batch["sessions"]:
                 wm = sess["mask"] * (sess["fact_mask"] if fact_only_write else 1.0)
-                state = self.skill.write(sess["hn"], sess["e_next"], state, write_mask=wm)
+                s = {} if want_stats else None
+                state = self.skill.write(sess["hn"], sess["e_next"], state, write_mask=wm, stats=s)
+                if want_stats and s:
+                    wstats = s  # last session's write-gate means (representative)
         delta, aux = self.skill.read_delta(batch["query"]["hn"], state)
+        if want_stats:
+            aux = {**aux, **{f"w_{k}": v for k, v in wstats.items()}}
         return self.logits(batch["query"]["hn"] + delta), aux, state
 
     # ------------------------------------------------------------------
@@ -187,10 +221,12 @@ class EpisodeTrainer:
         lp = rows.gather(2, tgt_c.unsqueeze(-1)).squeeze(-1)  # [B,P]
         return lp, valid
 
-    def loss_on_batch(self, batch: dict) -> tuple[Tensor, dict]:
+    def loss_on_batch(self, batch: dict, want_stats: bool = False) -> tuple[Tensor, dict]:
         cfg = self.cfg
         fact_only = self.step_idx < cfg.fact_only_write_steps
-        logits_aug, aux, _ = self.run_memory(batch, fact_only_write=fact_only)
+        logits_aug, aux, _ = self.run_memory(
+            batch, fact_only_write=fact_only, want_stats=want_stats
+        )
         with torch.no_grad():
             logits_base = self.logits(batch["query"]["hn"])
 
@@ -209,18 +245,27 @@ class EpisodeTrainer:
         kl_tok = F.kl_div(log_p_base, logp_aug, reduction="none", log_target=True).sum(-1)
         kl = (kl_tok * kl_mask).sum() / kl_mask.sum().clamp(min=1.0)
 
-        loss = ce + cfg.lambda_kl * kl
+        lam = self.effective_lambda_kl()
+        loss = ce + lam * kl
 
         # --- diagnostics ----------------------------------------------------
-        with torch.no_grad():
-            gate = aux["read_gate"]
-            metrics = {
-                "loss": float(loss),
-                "ce": float(ce),
-                "kl": float(kl),
-                "read_gate_mean": float((gate * q["mask"]).sum() / q["mask"].sum().clamp(min=1)),
-                "fact_only_write": bool(fact_only),
-            }
+        metrics: dict = {}
+        if want_stats:
+            with torch.no_grad():
+                gate = aux["read_gate"]
+                metrics = {
+                    "loss": float(loss),
+                    "ce": float(ce),
+                    "kl": float(kl),
+                    "lambda_kl": round(lam, 4),
+                    "read_gate_mean": float(
+                        (gate * q["mask"]).sum() / q["mask"].sum().clamp(min=1)
+                    ),
+                    "lr_gate_mean": aux.get("w_lr_gate_mean"),
+                    "momentum_mean": aux.get("w_momentum_mean"),
+                    "forget_mean": aux.get("w_forget_mean"),
+                    "fact_only_write": bool(fact_only),
+                }
         return loss, metrics
 
     # ------------------------------------------------------------------
@@ -263,23 +308,37 @@ class EpisodeTrainer:
         return out
 
     # ------------------------------------------------------------------
-    def train(self, sample_batch, eval_batch: dict | None = None, log_path: str | None = None) -> list[dict]:
+    def train(
+        self,
+        sample_batch,
+        eval_batch: dict | None = None,
+        log_path: str | None = None,
+        checkpoint_cb=None,
+    ) -> list[dict]:
         """``sample_batch`` is a callable () → collated batch (so the caller owns
-        data loading / mixing / curriculum)."""
+        data loading / mixing / curriculum).
+
+        Resumes from ``self.step_idx`` (set by a restored checkpoint): appends to
+        the log on resume, truncates on a fresh start.  ``checkpoint_cb(step)`` is
+        invoked every ``cfg.checkpoint_every`` steps so the caller can persist
+        skill+optimizer+step for crash recovery."""
         cfg = self.cfg
         self.skill.train()
         t0 = time.time()
-        log_f = open(log_path, "a") if log_path else None
+        resuming = self.step_idx > 0
+        log_f = open(log_path, "a" if resuming else "w") if log_path else None
         try:
-            for _ in range(cfg.steps):
+            while self.step_idx < cfg.steps:
+                nxt = self.step_idx + 1
+                will_log = nxt % cfg.log_every == 0 or nxt == 1
                 batch = sample_batch()
-                loss, metrics = self.loss_on_batch(batch)
+                loss, metrics = self.loss_on_batch(batch, want_stats=will_log)
                 self.opt.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.skill.parameters(), cfg.grad_clip)
                 self.opt.step()
                 self.step_idx += 1
-                if self.step_idx % cfg.log_every == 0 or self.step_idx == 1:
+                if will_log:
                     metrics.update(step=self.step_idx, wall_s=round(time.time() - t0, 1))
                     if eval_batch is not None and (
                         self.step_idx % cfg.eval_every == 0 or self.step_idx == 1
@@ -291,6 +350,8 @@ class EpisodeTrainer:
                     if log_f:
                         log_f.write(line + "\n")
                         log_f.flush()
+                if checkpoint_cb is not None and self.step_idx % cfg.checkpoint_every == 0:
+                    checkpoint_cb(self.step_idx)
         finally:
             if log_f:
                 log_f.close()

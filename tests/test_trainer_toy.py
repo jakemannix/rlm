@@ -30,8 +30,14 @@ T_INGEST, T_QUERY = 8, 5
 class ToyWorld:
     def __init__(self, seed: int = 0):
         g = torch.Generator().manual_seed(seed)
-        self.E = torch.nn.functional.normalize(torch.randn(VOCAB, D_MODEL, generator=g), dim=-1) * (D_MODEL ** 0.5) * 0.5
-        self.u = torch.nn.functional.normalize(torch.randn(N_FACTS, D_MODEL, generator=g), dim=-1) * (D_MODEL ** 0.5)
+        self.E = (
+            torch.nn.functional.normalize(torch.randn(VOCAB, D_MODEL, generator=g), dim=-1)
+            * (D_MODEL**0.5)
+            * 0.5
+        )
+        self.u = torch.nn.functional.normalize(
+            torch.randn(N_FACTS, D_MODEL, generator=g), dim=-1
+        ) * (D_MODEL**0.5)
         self.answers = torch.randint(0, VOCAB, (N_FACTS,), generator=g)
         self.g = g
 
@@ -82,7 +88,19 @@ def trained() -> tuple[EpisodeTrainer, dict]:
     skill = MemorySkill(
         SkillConfig(d_model=D_MODEL, d_k=D_K, store=LinearStoreConfig(chunk_size=2))
     )
-    cfg = TrainerConfig(steps=300, batch_size=24, lr=3e-3, lambda_kl=0.3, log_every=100, eval_every=10_000, seed=0)
+    # kl warmup/ramp off: this is a fast steady-state convergence test (the
+    # recall-only/KL-warmup schedule is a separate concern, tested below).
+    cfg = TrainerConfig(
+        steps=300,
+        batch_size=24,
+        lr=3e-3,
+        lambda_kl=0.3,
+        log_every=100,
+        eval_every=10_000,
+        kl_warmup_steps=0,
+        kl_ramp_steps=0,
+        seed=0,
+    )
     trainer = EpisodeTrainer(skill, world.E, cfg)
 
     def sample():
@@ -130,3 +148,20 @@ def test_empty_store_is_noop_injection(trained):
     logits_empty, _, _ = trainer.run_memory(eval_batch, fact_only_write=False, zero_store=True)
     base = trainer.logits(eval_batch["query"]["hn"])
     assert torch.allclose(logits_empty, base, atol=1e-5)
+
+
+def test_kl_warmup_and_ramp_schedule():
+    """lambda_kl is 0 through warmup, then linearly ramps to the target (§5.2)."""
+    skill = MemorySkill(SkillConfig(d_model=8, d_k=8, store=LinearStoreConfig(chunk_size=2)))
+    cfg = TrainerConfig(lambda_kl=0.4, kl_warmup_steps=100, kl_ramp_steps=100)
+    tr = EpisodeTrainer(skill, torch.randn(16, 8), cfg)
+    tr.step_idx = 50
+    assert tr.effective_lambda_kl() == 0.0  # in warmup
+    tr.step_idx = 100
+    assert tr.effective_lambda_kl() == 0.0  # warmup boundary
+    tr.step_idx = 150
+    assert abs(tr.effective_lambda_kl() - 0.2) < 1e-6  # halfway up ramp
+    tr.step_idx = 200
+    assert abs(tr.effective_lambda_kl() - 0.4) < 1e-6  # full
+    tr.step_idx = 999
+    assert abs(tr.effective_lambda_kl() - 0.4) < 1e-6  # clamped

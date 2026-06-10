@@ -96,9 +96,10 @@ class MemorySkill(nn.Module):
         e_next: Tensor,  # [B, T, d_model] embedding rows of token t+1
         state: StoreState,
         write_mask: Tensor | None = None,  # [B, T]
+        stats: dict | None = None,  # optional out-dict: write-side gate means
     ) -> StoreState:
         keys = self.key_enc(hn)
-        return self.store.write(keys, e_next, state, write_mask=write_mask)
+        return self.store.write(keys, e_next, state, write_mask=write_mask, stats=stats)
 
     def read_delta(
         self,
