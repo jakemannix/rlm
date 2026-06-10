@@ -3,6 +3,8 @@
 Skipped automatically if ``torch`` is not installed.
 """
 
+import os
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -300,3 +302,99 @@ def test_modeling_wrapper_compatibility():
     out = aug(x)
     assert out.shape == (1, 5, 16)
     assert torch.isfinite(out).all()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for real-world use.
+#
+# The tests above only feed ~unit-scale ``torch.randn``, which hid three bugs
+# that only surface on real models: (1) NaN divergence on the large activations
+# real LMs produce, (2) the meta-training gradient severed by ``init_state``'s
+# unconditional detach, and (3) a gate dtype clash under mixed precision. These
+# tests exercise the real-scale regime (including a real Gemma-270m fixture).
+# ---------------------------------------------------------------------------
+
+_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "gemma270m_states.pt")
+
+
+def test_normalized_update_is_finite_on_massive_activations():
+    """The normalized update stays finite on O(1e4) inputs; the unnormalized
+    path does not (documents why normalization is the default)."""
+    _seed(0)
+    keys = torch.randn(1, 64, 16) * 3e4
+    values = torch.randn(1, 64, 16) * 3e4
+
+    out, _ = TitansMemory(
+        MemoryConfig(key_dim=16, value_dim=16, hidden_dim=32, chunk_size=4)
+    ).read_write(keys, values, keys)
+    assert torch.isfinite(out).all()
+
+    raw = MemoryConfig(
+        key_dim=16, value_dim=16, hidden_dim=32, chunk_size=4, normalize_qk=False, normalize_v=False
+    )
+    out_raw, _ = TitansMemory(raw).read_write(keys, values, keys)
+    assert not torch.isfinite(out_raw).all()
+
+
+def test_memory_mlp_receives_gradient_in_train_mode():
+    """Meta-training must reach the memory MLP, not just the gate heads."""
+    _seed(0)
+    mem = TitansMemory(MemoryConfig(key_dim=8, value_dim=8, hidden_dim=16, learnable_gates=True))
+    keys, values = torch.randn(1, 8, 8), torch.randn(1, 8, 8)
+
+    mem.train()
+    out, _ = mem.read_write(keys, values, keys)
+    out.pow(2).mean().backward()
+    mlp_grad = sum(p.grad.abs().sum() for p in mem.memory.parameters() if p.grad is not None)
+    assert mlp_grad > 0, "memory MLP got no gradient (the init_state detach regression)"
+
+    # Eval mode detaches: clean per-sequence reset, no graph into the MLP init.
+    mem.eval()
+    for p in mem.parameters():
+        p.grad = None
+    out2, _ = mem.read_write(keys, values, keys)
+    out2.pow(2).mean().backward()
+    assert all(p.grad is None or p.grad.abs().sum() == 0 for p in mem.memory.parameters())
+
+
+def test_gates_handle_mixed_precision():
+    """Module in bf16 with caller-upcast fp32 state (the HF wrapper's pattern)
+    must not raise a dtype mismatch in the learnable gates."""
+    _seed(0)
+    mem = TitansMemory(MemoryConfig(key_dim=8, value_dim=8, hidden_dim=16, learnable_gates=True))
+    mem = mem.to(torch.bfloat16)
+    keys = torch.randn(1, 8, 8, dtype=torch.float32)
+    values = torch.randn(1, 8, 8, dtype=torch.float32)
+    state = mem.init_state(1, detach=True)
+    state = {kind: {k: v.float() for k, v in d.items()} for kind, d in state.items()}
+    out, _ = mem.read_write(keys, values, keys, state)
+    assert torch.isfinite(out).all()
+
+
+def test_memorizes_real_gemma_states():
+    """On real (massive-activation) Gemma-270m states the normalized memory is
+    stable and learns to recall via meta-training."""
+    if not os.path.exists(_FIXTURE):
+        pytest.skip("fixture missing; run tests/fixtures/make_fixture.py")
+    H = torch.load(_FIXTURE)["states"].float()[:25]  # real states, abs-max ~6e4
+    d = H.shape[-1]
+    keys, values = H[:-1].unsqueeze(0), H[1:].unsqueeze(0)  # token i -> token i+1
+    target = TitansMemory._rms_norm(values)  # memory works in normalized space
+
+    _seed(0)
+    mem = TitansMemory(
+        MemoryConfig(key_dim=d, value_dim=d, hidden_dim=64, chunk_size=12, learnable_gates=True)
+    )
+    mem.train()
+    out0, _ = mem.read_write(keys, values, keys)
+    assert torch.isfinite(out0).all()  # stable on real data
+
+    opt = torch.optim.Adam(mem.parameters(), lr=1e-2)
+    for _ in range(50):
+        out, _ = mem.read_write(keys, values, keys)
+        loss = (out - target).pow(2).mean()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    rel = ((out - target).pow(2).mean() / target.pow(2).mean()).item()
+    assert rel < 0.6, f"failed to memorize real states (rel-MSE {rel:.3f})"

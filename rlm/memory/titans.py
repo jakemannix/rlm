@@ -136,6 +136,20 @@ class TitansMemory(nn.Module):
         return 0.5 * (pred - target).pow(2).mean(dim=-1).sum()
 
     # ------------------------------------------------------------------
+    # Input normalization
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _rms_norm(x: torch.Tensor) -> torch.Tensor:
+        """RMS-normalize over the feature dim (unit mean-square).
+
+        Keeps the online update bounded and well-conditioned regardless of the
+        caller's input scale.  Real LM activations can be O(1e4-1e5), which
+        otherwise makes the surprise gradient explode to NaN within a couple of
+        chunks.
+        """
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+
+    # ------------------------------------------------------------------
     # Gate helpers
     # ------------------------------------------------------------------
     def _gates(self, keys_chunk: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -156,20 +170,40 @@ class TitansMemory(nn.Module):
             )
         # Mean-pool over the chunk so the gate output is a scalar.
         pooled = keys_chunk.mean(dim=(0, 1)) if keys_chunk.dim() == 3 else keys_chunk.mean(0)
-        lr = torch.sigmoid(self.lr_gate(pooled)).squeeze() * cfg.inner_lr * 2
-        mom = torch.sigmoid(self.momentum_gate(pooled)).squeeze() * cfg.momentum
-        fgt = torch.sigmoid(self.forget_gate(pooled)).squeeze() * cfg.forget_rate * 2
+        # The gate Linears live in the module's dtype, but callers (e.g. the HF
+        # wrapper) may upcast keys to float32 for numerical stability.  Run the
+        # gate in its own dtype, then cast the scalar back, so mixed-precision
+        # pipelines don't hit a `mat1 and mat2 must have the same dtype` error.
+        in_dtype = keys_chunk.dtype
+        pooled = pooled.to(self.lr_gate.weight.dtype)
+        lr = (torch.sigmoid(self.lr_gate(pooled)).squeeze() * cfg.inner_lr * 2).to(in_dtype)
+        mom = (torch.sigmoid(self.momentum_gate(pooled)).squeeze() * cfg.momentum).to(in_dtype)
+        fgt = (torch.sigmoid(self.forget_gate(pooled)).squeeze() * cfg.forget_rate * 2).to(in_dtype)
         return lr, mom, fgt
 
     # ------------------------------------------------------------------
     # Online update
     # ------------------------------------------------------------------
-    def init_state(self, batch_size: int, device=None, dtype=None) -> dict[str, Any]:
-        """Initialise per-sequence memory + momentum state."""
-        params = {
-            name: p.detach().clone().unsqueeze(0).expand(batch_size, *p.shape).contiguous()
-            for name, p in self.memory.named_parameters()
-        }
+    def init_state(
+        self, batch_size: int, device=None, dtype=None, detach: bool | None = None
+    ) -> dict[str, Any]:
+        """Initialise per-sequence memory + momentum state.
+
+        ``detach`` controls whether the initial parameters are detached from
+        ``self.memory``.  When ``None`` (default) it resolves to
+        ``not self.training`` so that **meta-training** (``module.train()``)
+        lets the outer-loop gradient flow into the initial memory parameters,
+        while **inference** (``module.eval()``) detaches for a clean,
+        graph-free per-sequence reset.  Detaching unconditionally — as the
+        original code did — silently zeroed the gradient to the memory MLP, so
+        only the gate heads ever trained.
+        """
+        if detach is None:
+            detach = not self.training
+        params = {}
+        for name, p in self.memory.named_parameters():
+            base = p.detach() if detach else p
+            params[name] = base.unsqueeze(0).expand(batch_size, *base.shape).contiguous()
         momentum = {name: torch.zeros_like(p) for name, p in params.items()}
         return {"params": params, "momentum": momentum}
 
@@ -206,6 +240,8 @@ class TitansMemory(nn.Module):
     # ------------------------------------------------------------------
     def read(self, queries: torch.Tensor, state: dict[str, Any] | None = None) -> torch.Tensor:
         """Read from the memory at the current state without updating it."""
+        if self.cfg.normalize_qk:
+            queries = self._rms_norm(queries)
         if state is None:
             state = self.init_state(queries.shape[0], queries.device, queries.dtype)
         outs = [
@@ -221,6 +257,10 @@ class TitansMemory(nn.Module):
         state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Stream ``(keys, values)`` into the memory and return the new state."""
+        if self.cfg.normalize_qk:
+            keys = self._rms_norm(keys)
+        if self.cfg.normalize_v:
+            values = self._rms_norm(values)
         if state is None:
             state = self.init_state(keys.shape[0], keys.device, keys.dtype)
         batch_size, seq_len, _ = keys.shape

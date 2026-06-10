@@ -45,6 +45,15 @@ class MemoryConfig:
     # gives the pure online recurrence; larger chunks are faster and use
     # the chunk-wise gradient from the paper.
     chunk_size: int = 1
+    # RMS-normalize keys/queries (``normalize_qk``) and values (``normalize_v``)
+    # before the online update.  Essential on real LMs: their residual-stream
+    # activations are O(1e4-1e5) ("massive activations"), which makes the
+    # unnormalized surprise gradient diverge to NaN.  Empirically, QK-norm is
+    # what conditions recall, and V-norm is a small additional gain (values in
+    # the normalized residual space already have ~uniform magnitude).  Turn
+    # ``normalize_v`` off only if your values carry information in their norm.
+    normalize_qk: bool = True
+    normalize_v: bool = True
 
     # --- Retention surrogate (Miras) -----------------------------------
     # Surrogate loss used to compute the "surprise" signal.  "l2" recovers
