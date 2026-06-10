@@ -193,3 +193,28 @@ def test_write_stats_surface_gate_means():
     )
     assert {"lr_gate_mean", "momentum_mean", "forget_mean"} <= set(stats)
     assert 0.0 <= stats["lr_gate_mean"] <= store.cfg.max_lr
+
+
+def test_rms_norm_heads_normalizes_each_block():
+    from rlm.memory.linear_store import rms_norm_heads
+
+    x = torch.randn(2, 3, 64)
+    y = rms_norm_heads(x, n_heads=8)
+    ms = y.reshape(2, 3, 8, 8).pow(2).mean(-1)  # per-head mean-square
+    assert torch.allclose(ms, torch.ones_like(ms), atol=1e-4)
+    assert torch.allclose(rms_norm_heads(x, 1), rms_norm(x))  # n_heads=1 == plain rms_norm
+
+
+def test_multihead_one_shot_recall_is_exact():
+    """θ=1 one-shot write stays exact under per-head norm: ‖k‖²=d_k regardless of H,
+    so M·k = rms_norm(v) for a single fact (the /d_k scale is unchanged)."""
+    store = make_store(d_k=64, d_v=48, n_heads=8)
+    state = store.init_state(1)
+    k, v = torch.randn(1, 1, 64), torch.randn(1, 1, 48)
+    state = store.write(k, v, state)
+    assert torch.allclose(store.read(k, state)[0, 0], rms_norm(v)[0, 0], atol=1e-4)
+
+
+def test_multihead_requires_divisible_d_k():
+    with pytest.raises(ValueError):
+        LinearStoreConfig(d_k=100, n_heads=8)

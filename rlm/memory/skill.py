@@ -41,21 +41,31 @@ class SkillConfig:
     encoder_hidden: int = 1024
     tie_kq: bool = False
     read_gate_bias_init: float = -2.0  # g₀ ≈ 0.12: small but alive
+    # Multi-head addressing (design doc §1/Q1).  n_heads>1 + shared_encoder=False ⇒
+    # H *independent* encoders (d_model→d_k/H) feeding H per-head-normed stores: the
+    # capacity bet (more independent key directions).  shared_encoder=True is the A/B
+    # control — one encoder reshaped into heads, predicted ≈ no-op for a linear store.
+    n_heads: int = 1
+    shared_encoder: bool = False
     store: LinearStoreConfig = field(default_factory=LinearStoreConfig)
 
     def __post_init__(self) -> None:
         # Values live in embedding space: d_v is pinned to d_model.
         self.store.d_k = self.d_k
         self.store.d_v = self.d_model
+        self.store.n_heads = self.n_heads
+        if self.d_k % self.n_heads != 0:
+            raise ValueError(f"d_k={self.d_k} must be divisible by n_heads={self.n_heads}")
 
 
-def make_encoder(cfg: SkillConfig) -> nn.Module:
+def _make_one(cfg: SkillConfig, out_dim: int) -> nn.Module:
+    """One encoder d_model→out_dim: Linear (encoder_layers=1) or GELU-MLP (≥2)."""
     if cfg.encoder_layers == 1:
-        enc = nn.Linear(cfg.d_model, cfg.d_k, bias=False)
+        enc = nn.Linear(cfg.d_model, out_dim, bias=False)
         nn.init.orthogonal_(enc.weight)
         return enc
     layers: list[nn.Module] = []
-    dims = [cfg.d_model] + [cfg.encoder_hidden] * (cfg.encoder_layers - 1) + [cfg.d_k]
+    dims = [cfg.d_model] + [cfg.encoder_hidden] * (cfg.encoder_layers - 1) + [out_dim]
     for i in range(len(dims) - 1):
         lin = nn.Linear(dims[i], dims[i + 1], bias=True)
         nn.init.orthogonal_(lin.weight)
@@ -64,6 +74,27 @@ def make_encoder(cfg: SkillConfig) -> nn.Module:
         if i < len(dims) - 2:
             layers.append(nn.GELU())
     return nn.Sequential(*layers)
+
+
+class _MultiHeadEncoder(nn.Module):
+    """``n_heads`` independent encoders d_model→d_k/n_heads, concatenated to d_k, so
+    each head addresses its own subspace (the design doc §1/Q1 capacity bet)."""
+
+    def __init__(self, cfg: SkillConfig):
+        super().__init__()
+        d_h = cfg.d_k // cfg.n_heads
+        self.heads = nn.ModuleList([_make_one(cfg, d_h) for _ in range(cfg.n_heads)])
+
+    def forward(self, x: Tensor) -> Tensor:
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+
+
+def make_encoder(cfg: SkillConfig) -> nn.Module:
+    # n_heads=1 or shared_encoder ⇒ a single encoder → d_k (byte-identical to the
+    # single-head path).  Independent heads are what can raise effective key dim.
+    if cfg.n_heads == 1 or cfg.shared_encoder:
+        return _make_one(cfg, cfg.d_k)
+    return _MultiHeadEncoder(cfg)
 
 
 class MemorySkill(nn.Module):

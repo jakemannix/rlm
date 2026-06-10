@@ -80,6 +80,9 @@ def main() -> None:
     ap.add_argument("--lambda-kl", type=float, default=0.5)
     ap.add_argument("--d-k", type=int, default=512)
     ap.add_argument("--encoder-layers", type=int, default=1)
+    ap.add_argument("--n-heads", type=int, default=1, help="multi-head store: split d_k into H per-head-normed blocks")
+    ap.add_argument("--shared-encoder", action="store_true",
+                    help="with --n-heads>1, reshape one encoder into heads (A/B control) instead of independent encoders")
     ap.add_argument("--chunk-size", type=int, default=4)
     ap.add_argument(
         "--fact-only-write-steps",
@@ -128,6 +131,8 @@ def main() -> None:
             d_model=head["d_model"],
             d_k=args.d_k,
             encoder_layers=args.encoder_layers,
+            n_heads=args.n_heads,
+            shared_encoder=args.shared_encoder,
             store=LinearStoreConfig(chunk_size=args.chunk_size),
         )
     )

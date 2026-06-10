@@ -63,6 +63,23 @@ def rms_norm(x: Tensor, eps: float = 1e-6) -> Tensor:
     return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
 
 
+def rms_norm_heads(x: Tensor, n_heads: int, eps: float = 1e-6) -> Tensor:
+    """Per-head RMS-norm: split the last dim into ``n_heads`` blocks and normalise
+    each to unit mean-square independently (so ‖block‖² = d_k/n_heads each, and the
+    full key still has ‖k‖² = d_k).  ``n_heads == 1`` is exactly :func:`rms_norm`.
+
+    This is the *only* store-side change for multi-head addressing: it equalises the
+    key's energy across the H heads (no single anisotropic direction can dominate),
+    while M, the /d_k gradient scale, the gates and the read ``M·q`` are unchanged —
+    because a full-width value with a summed read keeps the per-head store equal to
+    one M[d_v, d_k] (see :class:`LinearStoreConfig`)."""
+    if n_heads == 1:
+        return rms_norm(x, eps)
+    *lead, d = x.shape
+    xh = rms_norm(x.reshape(*lead, n_heads, d // n_heads), eps)
+    return xh.reshape(*lead, d)
+
+
 @dataclass
 class LinearStoreConfig:
     """Geometry + update-rule hyperparameters for :class:`DeltaRuleStore`.
@@ -92,6 +109,21 @@ class LinearStoreConfig:
     chunk_size: int = 4
 
     normalize_v: bool = True
+
+    # Multi-head addressing (design doc §1/Q1).  >1 splits d_k into ``n_heads``
+    # blocks of d_k/n_heads and RMS-normalises each block *independently* before the
+    # (unchanged) delta-rule write/read.  Because the value is full-width and the read
+    # is M·q over the full d_k, the per-head store collapses to the *same* M[d_v,d_k]
+    # matrix — so the only mechanism is the per-head normalisation (it equalises
+    # energy across heads instead of letting one anisotropic direction dominate).
+    # The capacity payoff requires *independent per-head encoders* (SkillConfig); a
+    # shared encoder reshaped into heads barely moves the key geometry (the A/B
+    # control for "is multi-head a no-op?").  n_heads=1 is byte-identical to before.
+    n_heads: int = 1
+
+    def __post_init__(self) -> None:
+        if self.d_k % self.n_heads != 0:
+            raise ValueError(f"d_k={self.d_k} must be divisible by n_heads={self.n_heads}")
 
 
 class StoreState:
@@ -189,7 +221,7 @@ class DeltaRuleStore(nn.Module):
         if state.batch_size != B:
             raise ValueError(f"state batch {state.batch_size} != keys batch {B}")
 
-        k = rms_norm(keys)
+        k = rms_norm_heads(keys, cfg.n_heads)
         v = rms_norm(values) if cfg.normalize_v else values
 
         # Per-token learning rate (selectivity), optionally masked (padding /
@@ -257,7 +289,7 @@ class DeltaRuleStore(nn.Module):
         §2): downstream injection of out_proj(0)·g is a no-op, unlike an MLP
         store, which returns *something* for every query.
         """
-        q = rms_norm(queries)
+        q = rms_norm_heads(queries, self.cfg.n_heads)
         return torch.einsum("bvk,btk->btv", state.M, q)
 
     # ------------------------------------------------------------------

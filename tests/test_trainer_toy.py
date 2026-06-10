@@ -165,3 +165,25 @@ def test_kl_warmup_and_ramp_schedule():
     assert abs(tr.effective_lambda_kl() - 0.4) < 1e-6  # full
     tr.step_idx = 999
     assert abs(tr.effective_lambda_kl() - 0.4) < 1e-6  # clamped
+
+
+def test_multihead_skill_independent_and_shared_control():
+    """n_heads>1 builds H independent encoders (capacity bet); shared_encoder=True is
+    the single-encoder control. Both run write→read_delta with the unchanged d_v API."""
+    from rlm.memory.skill import _MultiHeadEncoder
+
+    indep = MemorySkill(SkillConfig(d_model=32, d_k=64, n_heads=8, store=LinearStoreConfig(chunk_size=2)))
+    assert isinstance(indep.key_enc, _MultiHeadEncoder) and len(indep.key_enc.heads) == 8
+    st = indep.init_state(2)
+    st = indep.write(torch.randn(2, 5, 32), torch.randn(2, 5, 32), st)
+    delta, _ = indep.read_delta(torch.randn(2, 5, 32), st)
+    assert delta.shape == (2, 5, 32)
+
+    shared = MemorySkill(
+        SkillConfig(d_model=32, d_k=64, n_heads=8, shared_encoder=True, store=LinearStoreConfig(chunk_size=2))
+    )
+    assert not isinstance(shared.key_enc, _MultiHeadEncoder)
+    st2 = shared.init_state(1)
+    st2 = shared.write(torch.randn(1, 4, 32), torch.randn(1, 4, 32), st2)
+    d2, _ = shared.read_delta(torch.randn(1, 4, 32), st2)
+    assert d2.shape == (1, 4, 32)
