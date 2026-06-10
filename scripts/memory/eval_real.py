@@ -76,30 +76,34 @@ def mean_pool_embed(model, tok, text, device):
 
 # --------------------------------------------------------------------------
 def run_baselines(model, tok, skill, facts, device, paraphrase):
-    floor, mem, ctx = [], [], []
+    """All lifts are in answer-logprob NATS over the no-context/no-store FLOOR
+    (base scoring the answer from the query alone), so the conditions are
+    comparable: memory = store's contribution at the query; in_context = the base
+    with the statement IN the prompt (the ceiling); retrieval = in-context with the
+    top-1 retrieved statement.  (Earlier bug: used store-vs-no-store lift, which is
+    0 by construction when use_store=False — it never measured the ceiling.)"""
+    mem, ctx, retr_hit, retr_ctx = [], [], [], []
     stmt_emb = torch.stack([mean_pool_embed(model, tok, f.statement, device) for f in facts])
-    retr_hit, retr_recall = [], []
     for i, f in enumerate(facts):
         q = query_of(f, paraphrase)
         sess = MemorySession(model, tok, skill, device=device)
         sess.ingest(f.statement)
-        floor.append(sess.score_answer(q, f.answer, use_store=False)["first_token_lift_nats"])
-        mem.append(sess.score_answer(q, f.answer, use_store=True)["first_token_lift_nats"])
-        # in-context ceiling: the base sees the statement, no store
+        r_q = sess.score_answer(q, f.answer, use_store=True)
+        floor_abs = r_q["gold_logprob_base"]  # base, query alone, no store
+        mem.append(r_q["gold_logprob"] - floor_abs)  # memory's contribution
         ic = sess.score_answer(f.statement + " " + q, f.answer, use_store=False)
-        ctx.append(ic["first_token_lift_nats"])
-        # retrieval: top-1 statement by cosine to the query, then in-context with it
+        ctx.append(ic["gold_logprob_base"] - floor_abs)  # in-context ceiling over floor
         qe = mean_pool_embed(model, tok, q, device)
         hit = int((stmt_emb @ qe).argmax())
         retr_hit.append(float(hit == i))
         rr = sess.score_answer(facts[hit].statement + " " + q, f.answer, use_store=False)
-        retr_recall.append(float(rr["first_token_top5"]))
+        retr_ctx.append(rr["gold_logprob_base"] - floor_abs)  # in-context with the retrieved fact
     return {
-        "floor_lift_nats": mean(floor),
+        "floor_lift_nats": 0.0,  # reference
         "memory_lift_nats": mean(mem),
         "in_context_lift_nats": mean(ctx),
         "retrieval_at1": mean(retr_hit),
-        "retrieval_recall_top5": mean(retr_recall),
+        "retrieval_in_context_lift_nats": mean(retr_ctx),
         "n": len(facts),
     }
 
@@ -182,7 +186,7 @@ def main():
         bank_s = fact_bank(gs, args.baseline_facts)
         base_runs.append(run_baselines(model, tok, skill, bank_s, args.device, args.paraphrase))
         gen_runs.append(run_generative(model, tok, skill, bank_s, args.device, args.paraphrase))
-    bkeys = ["floor_lift_nats", "memory_lift_nats", "in_context_lift_nats", "retrieval_at1", "retrieval_recall_top5"]
+    bkeys = ["floor_lift_nats", "memory_lift_nats", "in_context_lift_nats", "retrieval_at1", "retrieval_in_context_lift_nats"]
 
     # scale + persistence once on the seed-0 bank (already worst-case over many facts)
     scale_bank = fact_bank(RealCorpusGenerator(records=records, split="eval", seed=args.seed), max(checkpoints))
