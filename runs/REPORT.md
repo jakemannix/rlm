@@ -34,6 +34,22 @@ ephemeral VM dies.
 - **A3 curves obtained for two d_k (512, 1024)** — DoD requirement met.
 - **Remaining (need a design decision):** multi-head store for capacity/A2; A1b paraphrase; welded-MLP A3 baseline; base scaling.
 
+### Step 5 — capacity ROOT CAUSE + multi-head build (2026-06-10)
+Triggered by a 6-agent design panel (see `docs/handoff_capacity_and_multihead.md`): 3 critics
+unanimously proved a naive **linear multi-head store is a no-op** (`Σ_h M_h q_h = M q`).
+- **Oracle-key diagnostic** (`scripts/memory/diagnose.py`, CPU, no model): the delta-rule store
+  recalls **256/256 facts with orthogonal keys** (recall@1 = 1.00) but collapses like the real A3
+  curve at **mean key-cosine ≈ 0.6** (n2 .50, n8 .12, n16 .06). ⇒ **the ceiling is KEY OVERLAP,
+  not delta-rule erosion** — decorrelated keys fix it; no store/memory-as-tokens redesign needed.
+- **Multi-head built (informed/minimal):** math shows M stays `[d_v,d_k]`, so the only change is
+  **per-head RMS-norm** (`rms_norm_heads`) + **independent per-head encoders** (`_MultiHeadEncoder`,
+  the capacity bet) with `shared_encoder=True` as the predicted-no-op **A/B control**. `n_heads=1`
+  byte-identical; 46 CPU tests green. Flags `--n-heads/--shared-encoder`.
+- **GPU plan (L4, batch 8, when runtime back):** rebuild cache → Part B real-key geometry (measure
+  the actual cosine) → train arms {independent multi-head, shared-encoder control, richer encoder
+  `encoder_layers=2`, + key-whitening} → A1/A2/A3. The shared-vs-independent A/B *is* the test of the
+  panel's no-op claim; richer-encoder is the cheapest decorrelation lever.
+
 ## Bottom line
 A frozen Gemma-3-1b **can** be given useful persistent parametric memory: **A1 + A4 PASS** (single-fact cross-session recall +16 nats, retention 1.0). Capacity is the open frontier — limited by key effective-dimensionality, not by d_k or KL or the read gate, so the next step is a multi-head / richer-key design, which is a decision point rather than a sweep.
 
