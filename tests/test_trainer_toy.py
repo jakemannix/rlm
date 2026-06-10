@@ -187,3 +187,17 @@ def test_multihead_skill_independent_and_shared_control():
     st2 = shared.write(torch.randn(1, 4, 32), torch.randn(1, 4, 32), st2)
     d2, _ = shared.read_delta(torch.randn(1, 4, 32), st2)
     assert d2.shape == (1, 4, 32)
+
+
+def test_skill_match_gate_runs_and_is_optional():
+    """use_match_gate wires M₂ into the read gate (same gate dim); default is unchanged."""
+    sk = MemorySkill(SkillConfig(d_model=32, d_k=64, use_match_gate=True, store=LinearStoreConfig(chunk_size=2)))
+    assert sk.cfg.store.match_store
+    st = sk.write(torch.randn(1, 5, 32), torch.randn(1, 5, 32), sk.init_state(1))
+    delta, aux = sk.read_delta(torch.randn(1, 5, 32), st)
+    assert delta.shape == (1, 5, 32) and "match_score" in aux
+    # default off: no match store, gate falls back to read magnitude
+    sk0 = MemorySkill(SkillConfig(d_model=32, d_k=64, store=LinearStoreConfig(chunk_size=2)))
+    assert not sk0.cfg.store.match_store
+    st0 = sk0.init_state(1)
+    assert st0.M2 is None

@@ -54,6 +54,11 @@ class SkillConfig:
     # control — one encoder reshaped into heads, predicted ≈ no-op for a linear store.
     n_heads: int = 1
     shared_encoder: bool = False
+    # Match-score abstention (design review C3): feed the read gate a retrieval-
+    # confidence signal qᵀM₂q ("is q near anything stored") instead of the read
+    # magnitude — magnitude can't tell a matched recall from a big spurious read.
+    # Off ⇒ the gate's 3rd feature stays log1p(‖read‖) (byte-identical default).
+    use_match_gate: bool = False
     store: LinearStoreConfig = field(default_factory=LinearStoreConfig)
 
     def __post_init__(self) -> None:
@@ -61,6 +66,7 @@ class SkillConfig:
         self.store.d_k = self.d_k
         self.store.d_v = self.d_model
         self.store.n_heads = self.n_heads
+        self.store.match_store = self.use_match_gate
         if self.d_k % self.n_heads != 0:
             raise ValueError(f"d_k={self.d_k} must be divisible by n_heads={self.n_heads}")
 
@@ -179,11 +185,18 @@ class MemorySkill(nn.Module):
         # zero-init gate weight would then do 0·inf = NaN), compressed with log1p
         # so an occasional huge read can't saturate the gate during training.
         read_rms = read.norm(dim=-1, keepdim=True) * (read.shape[-1] ** -0.5)  # [B, T, 1]
-        g = torch.sigmoid(self.read_gate(torch.cat([hn, read, torch.log1p(read_rms)], dim=-1)))
+        if self.cfg.use_match_gate:
+            # qᵀM₂q ∈ ~[0,1]: "is q near a stored key" — the principled abstention
+            # signal (review C3), separating a matched recall from a big spurious read.
+            feat = self.store.match_score(q, state).unsqueeze(-1)
+        else:
+            feat = torch.log1p(read_rms)  # default: read magnitude (byte-identical)
+        g = torch.sigmoid(self.read_gate(torch.cat([hn, read, feat], dim=-1)))
         delta = g * self.out_proj(read)
         aux = {
             "read_gate": g.squeeze(-1).detach(),
             "read_rms": read.detach().pow(2).mean(dim=-1).sqrt(),
+            "match_score": self.store.match_score(q, state).detach(),
         }
         return delta, aux
 

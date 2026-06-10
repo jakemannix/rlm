@@ -121,6 +121,14 @@ class LinearStoreConfig:
     # control for "is multi-head a no-op?").  n_heads=1 is byte-identical to before.
     n_heads: int = 1
 
+    # Auto-associative MATCH store M₂ ∈ R^{d_k×d_k} (design review C3): keys are
+    # written as their own values (k→k) with the same gates, so ``qᵀM₂q ≈ Σ cos²(q,kⱼ)``
+    # is a retrieval-confidence score — "is q near anything I stored" — for the read
+    # gate to threshold (the principled abstention signal; read magnitude alone can't
+    # tell a matched recall from a big spurious read).  Off by default (no M₂ overhead,
+    # persistence unchanged); the read gate's feature stays the read-magnitude one.
+    match_store: bool = False
+
     def __post_init__(self) -> None:
         if self.d_k % self.n_heads != 0:
             raise ValueError(f"d_k={self.d_k} must be divisible by n_heads={self.n_heads}")
@@ -134,25 +142,35 @@ class StoreState:
     graph so BPTT reaches the gates and encoders.
     """
 
-    def __init__(self, M: Tensor, S: Tensor):
+    def __init__(self, M: Tensor, S: Tensor, M2: Tensor | None = None, S2: Tensor | None = None):
         if M.shape != S.shape or M.dim() != 3:
             raise ValueError(f"M/S must be [B, d_v, d_k] and match, got {M.shape} / {S.shape}")
         self.M = M
         self.S = S
+        # Optional auto-associative match store [B, d_k, d_k] (None unless match_store).
+        self.M2 = M2
+        self.S2 = S2
 
     @property
     def batch_size(self) -> int:
         return self.M.shape[0]
 
+    @staticmethod
+    def _opt(t: Tensor | None, fn) -> Tensor | None:
+        return None if t is None else fn(t)
+
     def detach(self) -> StoreState:
-        return StoreState(self.M.detach(), self.S.detach())
+        return StoreState(self.M.detach(), self.S.detach(),
+                          self._opt(self.M2, lambda t: t.detach()), self._opt(self.S2, lambda t: t.detach()))
 
     def clone(self) -> StoreState:
-        return StoreState(self.M.clone(), self.S.clone())
+        return StoreState(self.M.clone(), self.S.clone(),
+                          self._opt(self.M2, lambda t: t.clone()), self._opt(self.S2, lambda t: t.clone()))
 
     def zeroed(self) -> StoreState:
         """Empty store of the same shape — the A1 'empty memory' control."""
-        return StoreState(torch.zeros_like(self.M), torch.zeros_like(self.S))
+        return StoreState(torch.zeros_like(self.M), torch.zeros_like(self.S),
+                          self._opt(self.M2, torch.zeros_like), self._opt(self.S2, torch.zeros_like))
 
 
 class DeltaRuleStore(nn.Module):
@@ -187,9 +205,16 @@ class DeltaRuleStore(nn.Module):
     def init_state(self, batch_size: int, device=None, dtype=torch.float32) -> StoreState:
         device = device if device is not None else self.lr_gate.weight.device
         shape = (batch_size, self.cfg.d_v, self.cfg.d_k)
+        M2 = S2 = None
+        if self.cfg.match_store:
+            sh2 = (batch_size, self.cfg.d_k, self.cfg.d_k)
+            M2 = torch.zeros(sh2, device=device, dtype=dtype)
+            S2 = torch.zeros(sh2, device=device, dtype=dtype)
         return StoreState(
             torch.zeros(shape, device=device, dtype=dtype),
             torch.zeros(shape, device=device, dtype=dtype),
+            M2,
+            S2,
         )
 
     # ------------------------------------------------------------------
@@ -231,6 +256,7 @@ class DeltaRuleStore(nn.Module):
             theta = theta * write_mask
 
         M, S = state.M, state.S
+        M2, S2 = state.M2, state.S2  # auto-associative match store (None unless match_store)
         eta_acc = M.new_zeros(())
         alpha_acc = M.new_zeros(())
         n_chunks = 0
@@ -262,6 +288,14 @@ class DeltaRuleStore(nn.Module):
             S = (eta * active).unsqueeze(-1) * S - G
             M = (1.0 - alpha).unsqueeze(-1) * M + S
 
+            if cfg.match_store:
+                # Same delta rule, key as its own value (auto-association k→k).
+                pred2 = torch.einsum("bjk,bck->bcj", M2, kc)
+                err2 = pred2 - kc
+                G2 = torch.einsum("bcj,bck->bjk", err2 * tc.unsqueeze(-1), kc) / cfg.d_k
+                S2 = (eta * active).unsqueeze(-1) * S2 - G2
+                M2 = (1.0 - alpha).unsqueeze(-1) * M2 + S2
+
             if stats is not None:
                 eta_acc = eta_acc + (eta * active).mean()
                 alpha_acc = alpha_acc + alpha.mean()
@@ -277,7 +311,7 @@ class DeltaRuleStore(nn.Module):
             stats["momentum_mean"] = float(eta_acc / max(n_chunks, 1))
             stats["forget_mean"] = float(alpha_acc / max(n_chunks, 1))
 
-        return StoreState(M, S)
+        return StoreState(M, S, M2, S2)
 
     # ------------------------------------------------------------------
     # Read
@@ -292,23 +326,47 @@ class DeltaRuleStore(nn.Module):
         q = rms_norm_heads(queries, self.cfg.n_heads)
         return torch.einsum("bvk,btk->btv", state.M, q)
 
+    def match_score(self, queries: Tensor, state: StoreState) -> Tensor:
+        """Retrieval confidence ``qᵀM₂q / d_k`` ∈ ~[0,1] per position — "is q near
+        anything stored" (design review C3).  Zero (no signal) when there is no
+        match store, so the gate degrades to its read-magnitude behaviour."""
+        if state.M2 is None:
+            B, T, _ = queries.shape
+            return queries.new_zeros(B, T)
+        q = rms_norm_heads(queries, self.cfg.n_heads)
+        m2q = torch.einsum("bjk,btk->btj", state.M2, q)  # M₂ q
+        return torch.einsum("btj,btj->bt", q, m2q) / self.cfg.d_k
+
     # ------------------------------------------------------------------
     # Persistence (acceptance test A4)
     # ------------------------------------------------------------------
     @staticmethod
     def state_dict_for_persistence(state: StoreState) -> dict:
-        """M only, fp32.  Momentum is deliberately not persisted (§5.5)."""
-        return {"format": 1, "M": state.M.detach().to(torch.float32).cpu()}
+        """M (and the match store M₂ if present), fp32.  Momentum is deliberately
+        not persisted (§5.5).  Format 2 adds the optional M₂; format-1 (M-only)
+        payloads still load."""
+        out = {"format": 2, "M": state.M.detach().to(torch.float32).cpu()}
+        if state.M2 is not None:
+            out["M2"] = state.M2.detach().to(torch.float32).cpu()
+        return out
 
     def load_persisted_state(self, payload: dict, device=None) -> StoreState:
-        if payload.get("format") != 1:
+        if payload.get("format") not in (1, 2):
             raise ValueError(f"unknown store payload format: {payload.get('format')!r}")
-        M = payload["M"].to(device=device or self.lr_gate.weight.device, dtype=torch.float32)
+        dev = device or self.lr_gate.weight.device
+        M = payload["M"].to(device=dev, dtype=torch.float32)
         if M.dim() != 3 or M.shape[1] != self.cfg.d_v or M.shape[2] != self.cfg.d_k:
             raise ValueError(
                 f"persisted M shape {tuple(M.shape)} != cfg ({self.cfg.d_v},{self.cfg.d_k})"
             )
-        return StoreState(M, torch.zeros_like(M))
+        M2 = S2 = None
+        if self.cfg.match_store:
+            if "M2" in payload:
+                M2 = payload["M2"].to(device=dev, dtype=torch.float32)
+            else:  # loading an M-only state into a match-store skill: empty M₂
+                M2 = torch.zeros(M.shape[0], self.cfg.d_k, self.cfg.d_k, device=dev, dtype=torch.float32)
+            S2 = torch.zeros_like(M2)
+        return StoreState(M, torch.zeros_like(M), M2, S2)
 
     def save_state(self, state: StoreState, path: str) -> None:
         torch.save(self.state_dict_for_persistence(state), path)

@@ -250,3 +250,31 @@ def test_zca_whitening_decorrelates_and_roundtrips(tmp_path):
     loaded = MemorySkill.load(str(p))
     assert loaded.cfg.whiten
     assert torch.allclose(loaded.whiten_T, skill.whiten_T)
+
+
+def test_match_score_separates_stored_from_novel():
+    """M₂ (auto-associative) gives high qᵀM₂q for stored keys, low for novel ones,
+    exactly 0 for an empty store — the retrieval-confidence signal for the gate."""
+    store = make_store(d_k=64, d_v=48, match_store=True)
+    state = store.init_state(1)
+    keys = torch.randn(1, 8, 64)
+    state = store.write(keys, torch.randn(1, 8, 48), state)
+    stored = store.match_score(keys, state)[0].mean()
+    novel = store.match_score(torch.randn(1, 8, 64), state)[0].mean()
+    assert stored > novel + 0.1, f"match not separating: stored {stored:.3f} vs novel {novel:.3f}"
+    assert store.match_score(keys, store.init_state(1)).abs().max() < 1e-6  # empty store ⇒ 0
+
+
+def test_match_store_persists_and_legacy_loads(tmp_path):
+    store = make_store(d_k=32, d_v=24, match_store=True)
+    s = store.write(torch.randn(1, 6, 32), torch.randn(1, 6, 24), store.init_state(1))
+    payload = DeltaRuleStore.state_dict_for_persistence(s)
+    assert payload["format"] == 2 and "M2" in payload
+    assert torch.allclose(store.load_persisted_state(payload).M2, s.M2)
+    # a plain store carries no M₂; and a match store loading an M-only payload → empty M₂
+    plain = make_store(d_k=32, d_v=24)
+    ps = plain.write(torch.randn(1, 4, 32), torch.randn(1, 4, 24), plain.init_state(1))
+    pp = DeltaRuleStore.state_dict_for_persistence(ps)
+    assert "M2" not in pp and plain.load_persisted_state(pp).M2 is None
+    legacy = store.load_persisted_state({"format": 1, "M": ps.M})
+    assert legacy.M2 is not None and float(legacy.M2.abs().sum()) == 0.0
