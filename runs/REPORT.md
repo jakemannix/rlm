@@ -23,7 +23,13 @@ ephemeral VM dies.
 | 2b — train skill (4k steps, d_k=512, batch 8) | held-out recall≥3, top5≥0.8 | ✅ **PASS** | final held-out recall **+6.39 nats**, top5 **0.98**; gates healthy (no collapse). λ_KL=0.5. |
 | 2c — live acceptance (24 facts) | **A1 + A4 PASS** | ✅✅ **A1 PASS, A4 PASS** | **A1**: lift **+16.25 nats**, top5 **1.00**, empty 0.00, wrong-fact **−0.22**. **A4**: retention **1.00** (real disk round-trip into a fresh session). |
 | 3 — A2 abstention | A2 PASS without losing A1 | 🔄 in progress | λ_KL=0.5 (skill_v1): A1 PASS, A2 FAIL (neutral_kl 0.10, unrelated 0.17). λ_KL=2.0 (skill_kl2): A2 improved (kl 0.072, unrel 0.33) but **A1 broke** (wrong-fact −1.84) — confirms branch table "raise λ_KL → A1 degrades → capacity is the issue". Both A2 + wrong-fact = key **interference** → fix via wider d_k + deeper encoders (skill_dk1024). |
-| 4 — A3 capacity | interference curve per d_k | ⏳ pending | |
+| 4 — A3 capacity (d_k=512) | interference curve | ✅ curve obtained | recall lift/top5 vs N facts: n1 16.7/1.0, n2 10.1/1.0, n4 9.6/0.50, n8 10.2/0.75, n16 10.5/0.44, n32 6.0/0.09, n128 0.8/0.01. **d_k=512 cleanly holds ~2–8 facts**; interference dominates by n≥16–32. → wider d_k needed for capacity + A2. |
+
+### Step-3/4 notes (2026-06-10)
+- **A2 attempts:** λ_KL=0.5 (skill_v1): A1✓ A2✗ (neutral_kl 0.10, unrel 0.17). λ_KL=2.0 (skill_kl2): A2 a bit better but **A1 broke** (wrong-fact −1.84). Read-gate **magnitude feature** (skill_gate, branch-table fix): A1✓ A4✓ but A2 not fixed. So neither λ_KL nor gate-features crack A2 → it's **key interference** (capacity).
+- **Metric noise:** A2 `neutral_kl` swung **0.013 ↔ 0.22** for the *same* skill across eval seeds/fact-counts; A1 wrong-fact control −1.0 @ 8 facts vs +0.28 @ 24. The acceptance evals need **more facts** (denoise) before treating A2 as a hard fail.
+- **Bugs fixed mid-run:** read-gate magnitude feature overflowed fp32 (pow²) → NaN; `train_skill` didn't seed torch → non-deterministic encoder init. Both fixed.
+- **Next:** d_k=1024 (encoder_layers=1) training in flight — wider keys to cut interference (A2 + extend A3); denoise A2 evals with more facts; (welded-MLP A3 baseline arm; A1b paraphrase) remain.
 
 ## 🎯 MILESTONE (2026-06-10): the core question is answered for A1-verbatim.
 A frozen Gemma-3-1b + a meta-trained decoupled delta-rule memory recalls a nonce fact
