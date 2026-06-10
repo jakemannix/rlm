@@ -82,7 +82,12 @@ class MemorySkill(nn.Module):
         with torch.no_grad():
             self.out_proj.weight.copy_(torch.eye(cfg.d_model))
 
-        self.read_gate = nn.Linear(2 * cfg.d_model, 1)
+        # Gate features: [hn, read, ‖read‖_rms].  The read-magnitude feature lets
+        # the gate abstain when the store returns a weak/spurious read (key
+        # interference on an unrelated query) vs a strong matched recall — the
+        # branch table's "per-token read gate features" fix for A2 (raising
+        # lambda_kl alone over-suppresses and breaks A1's wrong-fact control).
+        self.read_gate = nn.Linear(2 * cfg.d_model + 1, 1)
         nn.init.zeros_(self.read_gate.weight)
         nn.init.constant_(self.read_gate.bias, cfg.read_gate_bias_init)
 
@@ -113,7 +118,8 @@ class MemorySkill(nn.Module):
         """
         q = self.query_enc(hn)
         read = self.store.read(q, state)  # [B, T, d_model]
-        g = torch.sigmoid(self.read_gate(torch.cat([hn, read], dim=-1)))  # [B, T, 1]
+        read_rms = read.pow(2).mean(dim=-1, keepdim=True).sqrt()  # [B, T, 1]
+        g = torch.sigmoid(self.read_gate(torch.cat([hn, read, read_rms], dim=-1)))  # [B, T, 1]
         delta = g * self.out_proj(read)
         aux = {
             "read_gate": g.squeeze(-1).detach(),
