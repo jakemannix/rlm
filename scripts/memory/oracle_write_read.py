@@ -47,6 +47,14 @@ def main() -> None:
     ap.add_argument("--dtype", default="bfloat16")
     ap.add_argument("--write-everything", action="store_true",
                     help="write all ingest tokens instead of fact-span only (measures untrained-gate erosion)")
+    ap.add_argument("--tie-kq", action="store_true",
+                    help="use one encoder for keys and queries (design doc §4 Step 1: 'read with the same "
+                         "encoder as q'); required for an UNTRAINED skill to align k and q")
+    ap.add_argument("--bare-ingest", action="store_true",
+                    help="ingest the fact's bare statement (matched context) instead of a filler-wrapped "
+                         "session, so the binding-position hidden is identical to the query's by causality")
+    ap.add_argument("--chunk-size", type=int, default=4,
+                    help="store write chunk size (design doc Step 1 hand-build uses 1)")
     ap.add_argument("--out", default="runs/oracle_write_read.json")
     args = ap.parse_args()
 
@@ -57,22 +65,29 @@ def main() -> None:
 
     torch.manual_seed(args.seed)
     d_model = model.get_input_embeddings().weight.shape[1]
-    skill = MemorySkill(SkillConfig(d_model=d_model, d_k=args.d_k, store=LinearStoreConfig(chunk_size=4)))
+    skill = MemorySkill(SkillConfig(d_model=d_model, d_k=args.d_k, tie_kq=args.tie_kq,
+                                    store=LinearStoreConfig(chunk_size=args.chunk_size)))
     gen = EpisodeGenerator(seed=args.seed)
     facts = [gen.make_fact() for _ in range(args.facts)]
+
+    def ingest_fact(sess: MemorySession, fact) -> None:
+        if args.bare_ingest:
+            sess.ingest(fact.statement)  # matched context: causal h at the binding position == query's
+        else:
+            sess.ingest_episode(recall_episode(gen, fact), fact_only=not args.write_everything)
 
     rows = []
     with tempfile.TemporaryDirectory() as td:
         for i, f in enumerate(facts):
             ingest = MemorySession(model, tok, skill, device=args.device)
-            ingest.ingest_episode(recall_episode(gen, f), fact_only=not args.write_everything)
+            ingest_fact(ingest, f)
             state_path = str(Path(td) / f"state_{i}.pt")
             ingest.save(state_path)
 
             recall = MemorySession(model, tok, skill, device=args.device)  # fresh session: context gone
             recall.load(state_path)
             wrong = MemorySession(model, tok, skill, device=args.device)
-            wrong.ingest_episode(recall_episode(gen, facts[(i + 1) % len(facts)]), fact_only=not args.write_everything)
+            ingest_fact(wrong, facts[(i + 1) % len(facts)])
 
             row = {"prompt": f.verbatim_prompt, "answer": f.answer, "scales": {}}
             for s in READ_SCALES:
