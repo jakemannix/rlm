@@ -84,6 +84,9 @@ def main() -> None:
     ap.add_argument("--shared-encoder", action="store_true",
                     help="with --n-heads>1, reshape one encoder into heads (A/B control) instead of independent encoders")
     ap.add_argument("--chunk-size", type=int, default=4)
+    ap.add_argument("--max-lr", type=float, default=2.0,
+                    help="lr-gate ceiling; init θ=max_lr/2. Lower = gentler writes = less delta-rule "
+                         "erosion = higher capacity (capacity_probe.py probe E). 2.0=θ1 (default), 0.06=θ0.03")
     ap.add_argument(
         "--fact-only-write-steps",
         type=int,
@@ -140,7 +143,7 @@ def main() -> None:
             encoder_layers=args.encoder_layers,
             n_heads=args.n_heads,
             shared_encoder=args.shared_encoder,
-            store=LinearStoreConfig(chunk_size=args.chunk_size),
+            store=LinearStoreConfig(chunk_size=args.chunk_size, max_lr=args.max_lr),
         )
     )
     if args.whiten:
