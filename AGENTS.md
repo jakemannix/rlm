@@ -2,6 +2,15 @@
 
 This guide covers best practices for contributing to the core Recursive Language Models `rlm` library and developing new environments (in `rlm/environments/`) and LM clients (in `rlm/clients/`).
 
+## Current focus (June 2026): parametric memory track
+
+Active work is the **Titans-style parametric long-term memory** in `rlm/memory/` —
+verify it in isolation (acceptance tests A1–A4) **before** any RLM integration.
+If you are an agent working in this repo, read `docs/memory_track_execution.md`
+first: it scopes what to touch (`rlm/memory/`, `scripts/memory/`, the memory
+tests) and what to leave alone (`rlm/core/`, the REPL, environments, clients).
+The design rationale is in `docs/design_consult_response.md`.
+
 ## Setup
 
 We use `uv` for developing `rlm`.

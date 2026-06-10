@@ -53,7 +53,11 @@ def get_client(
         from rlm.clients.azure_openai import AzureOpenAIClient
 
         return AzureOpenAIClient(**backend_kwargs)
+    elif backend == "titans_hf":
+        from rlm.clients.titans_hf import TitansHFClient
+
+        return TitansHFClient(**backend_kwargs)
     else:
         raise ValueError(
-            f"Unknown backend: {backend}. Supported backends: ['openai', 'vllm', 'portkey', 'openrouter', 'anthropic', 'azure_openai', 'gemini', 'vercel']"
+            f"Unknown backend: {backend}. Supported backends: ['openai', 'vllm', 'portkey', 'openrouter', 'anthropic', 'azure_openai', 'gemini', 'vercel', 'titans_hf']"
         )

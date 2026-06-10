@@ -1,0 +1,377 @@
+"""
+Zero-init linear fast-weight store with an analytic delta-rule update.
+
+This is the "decoupled store" arm from ``docs/design_consult_response.md`` §1/Q1:
+all *skill* lives outside (key/query encoders, gates, readout); the *content* is a
+single mutable matrix ``M ∈ R^{d_v × d_k}`` initialised to **zero**, so there is no
+init-vs-content competition at all (θ₀ ≡ 0) and an empty store reads back exactly 0.
+
+The Titans surprise update with an L2 retention loss on a linear map *is* the delta
+rule (Widrow–Hoff / DeltaNet with momentum and decay)::
+
+    err_t = M_{c} k_t − v_t                       # at start-of-chunk M (chunk-wise)
+    G_c   = Σ_t θ_t · err_t k_tᵀ / d_k            # per-token gated, analytic gradient
+    S_c   = η_c · S_{c−1} − G_c                   # momentum
+    M_c   = (1 − α_c) · M_{c−1} + S_c             # forget + write
+
+so the inner loop needs no autograd at all: it is a few GEMMs, fully batched, and
+differentiable w.r.t. the gates / encoders by ordinary BPTT through the chunk
+sequence.
+
+Scaling convention (deliberate deviation from ``titans.py``, see design doc §5.1):
+keys/queries are RMS-normalised (⇒ ‖k‖² = d_k) and the gradient carries a 1/d_k, so
+**lr θ = 1 writes a fresh association exactly in one shot** (for a key orthogonal to
+existing content):  M ← M + θ·v kᵀ/d_k  ⇒  M k = θ·v.  The default gate range is
+(0, 2) with init exactly 1.0, because one-shot episodic writes are the regime this
+store is for; ``titans.py``'s 1e-2 default cannot write a single-occurrence fact.
+
+Gates (all start near the one-shot-exact regime; training must *earn* drift):
+- ``lr``      — per *token* (this is the selectivity mechanism: write the fact,
+                skip the filler), sigmoid(W k_t + b) · max_lr, zero-init ⇒ θ₀ = 1.
+- ``momentum``— per chunk scalar, pooled over the chunk's keys.  NB heavy-ball
+                momentum deposits each gradient with total weight 1/(1−η) over
+                subsequent chunks; init is ≈0 so writes are one-shot exact.
+- ``forget``  — per chunk scalar.  Forgetting **compounds across chunks**: α per
+                chunk over C chunks retains (1−α)^C, so the gate is biased strongly
+                negative at init (α₀ ≈ 1e-3 · max_forget-ish) and training must
+                *earn* forgetting.  Cross-session persistence dies here otherwise.
+
+Delta-rule physics worth knowing (encoded in tests/test_linear_store.py):
+error-correcting writes *erode* existing content along overlapping key
+directions — m unselective writes at lr θ retain ≈ exp(−m·θ/d_k) of an earlier
+association.  Read-side interference is what the delta rule buys down; the price
+is write-side erosion, and the per-token lr gate's selectivity (θ→0 on filler) is
+therefore load-bearing for cross-session persistence, not a nicety.  The
+``multisession`` episode type exists to train exactly this.
+
+Serialization (acceptance test A4): ``state_dict_for_persistence`` /
+``load_persisted_state`` round-trip **M only** — momentum is zeroed on load, since a
+stale momentum direction from session N would contaminate the first writes of
+session N+1.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+from torch import Tensor, nn
+
+
+def rms_norm(x: Tensor, eps: float = 1e-6) -> Tensor:
+    """RMS-normalise the last dim to unit mean-square (so ‖x‖² = dim)."""
+    return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+
+
+def rms_norm_heads(x: Tensor, n_heads: int, eps: float = 1e-6) -> Tensor:
+    """Per-head RMS-norm: split the last dim into ``n_heads`` blocks and normalise
+    each to unit mean-square independently (so ‖block‖² = d_k/n_heads each, and the
+    full key still has ‖k‖² = d_k).  ``n_heads == 1`` is exactly :func:`rms_norm`.
+
+    This is the *only* store-side change for multi-head addressing: it equalises the
+    key's energy across the H heads (no single anisotropic direction can dominate),
+    while M, the /d_k gradient scale, the gates and the read ``M·q`` are unchanged —
+    because a full-width value with a summed read keeps the per-head store equal to
+    one M[d_v, d_k] (see :class:`LinearStoreConfig`)."""
+    if n_heads == 1:
+        return rms_norm(x, eps)
+    *lead, d = x.shape
+    xh = rms_norm(x.reshape(*lead, n_heads, d // n_heads), eps)
+    return xh.reshape(*lead, d)
+
+
+@dataclass
+class LinearStoreConfig:
+    """Geometry + update-rule hyperparameters for :class:`DeltaRuleStore`.
+
+    Kept separate from :class:`rlm.memory.config.MemoryConfig` on purpose: that
+    config's ``init_scale`` is shared with the HF wrapper's projection init, and a
+    zero-init store must not zero-init the projections (design doc §5.6).
+    """
+
+    d_k: int = 512
+    d_v: int = 1152  # default: Gemma-3-1B embedding dim (values live in e-space)
+
+    # Gate ceilings.  lr range is (0, max_lr) with init exactly max_lr/2; the
+    # default ceiling of 2.0 puts the one-shot-write point θ=1 at the init.
+    max_lr: float = 2.0
+    max_momentum: float = 0.95
+    # sigmoid(momentum_bias_init) · max_momentum = η at init.  Heavy-ball momentum
+    # re-deposits each gradient into M with total weight 1/(1−η) across later
+    # chunks (geometric series), so η must start ≈0 for one-shot writes to be
+    # *exact* — training can raise it and will see the deposit factor in the loss.
+    momentum_bias_init: float = -4.0
+    max_forget: float = 0.1
+    # sigmoid(forget_bias_init) · max_forget = α at init.  −5 ⇒ α₀ ≈ 6.7e-4.
+    forget_bias_init: float = -5.0
+
+    # Tokens per chunk-wise update during *writes*.  Small for one-shot facts.
+    chunk_size: int = 4
+
+    normalize_v: bool = True
+
+    # Multi-head addressing (design doc §1/Q1).  >1 splits d_k into ``n_heads``
+    # blocks of d_k/n_heads and RMS-normalises each block *independently* before the
+    # (unchanged) delta-rule write/read.  Because the value is full-width and the read
+    # is M·q over the full d_k, the per-head store collapses to the *same* M[d_v,d_k]
+    # matrix — so the only mechanism is the per-head normalisation (it equalises
+    # energy across heads instead of letting one anisotropic direction dominate).
+    # The capacity payoff requires *independent per-head encoders* (SkillConfig); a
+    # shared encoder reshaped into heads barely moves the key geometry (the A/B
+    # control for "is multi-head a no-op?").  n_heads=1 is byte-identical to before.
+    n_heads: int = 1
+
+    # Auto-associative MATCH store M₂ ∈ R^{d_k×d_k} (design review C3): keys are
+    # written as their own values (k→k) with the same gates, so ``qᵀM₂q ≈ Σ cos²(q,kⱼ)``
+    # is a retrieval-confidence score — "is q near anything I stored" — for the read
+    # gate to threshold (the principled abstention signal; read magnitude alone can't
+    # tell a matched recall from a big spurious read).  Off by default (no M₂ overhead,
+    # persistence unchanged); the read gate's feature stays the read-magnitude one.
+    match_store: bool = False
+
+    def __post_init__(self) -> None:
+        if self.d_k % self.n_heads != 0:
+            raise ValueError(f"d_k={self.d_k} must be divisible by n_heads={self.n_heads}")
+
+
+class StoreState:
+    """Plain-tensor state: ``M`` [B, d_v, d_k] and momentum ``S`` (same shape).
+
+    Not an ``nn.Module`` — this is content, not skill.  ``detach()`` returns a
+    graph-free copy (deployment / across-episode boundaries); training keeps the
+    graph so BPTT reaches the gates and encoders.
+    """
+
+    def __init__(self, M: Tensor, S: Tensor, M2: Tensor | None = None, S2: Tensor | None = None):
+        if M.shape != S.shape or M.dim() != 3:
+            raise ValueError(f"M/S must be [B, d_v, d_k] and match, got {M.shape} / {S.shape}")
+        self.M = M
+        self.S = S
+        # Optional auto-associative match store [B, d_k, d_k] (None unless match_store).
+        self.M2 = M2
+        self.S2 = S2
+
+    @property
+    def batch_size(self) -> int:
+        return self.M.shape[0]
+
+    @staticmethod
+    def _opt(t: Tensor | None, fn) -> Tensor | None:
+        return None if t is None else fn(t)
+
+    def detach(self) -> StoreState:
+        return StoreState(self.M.detach(), self.S.detach(),
+                          self._opt(self.M2, lambda t: t.detach()), self._opt(self.S2, lambda t: t.detach()))
+
+    def clone(self) -> StoreState:
+        return StoreState(self.M.clone(), self.S.clone(),
+                          self._opt(self.M2, lambda t: t.clone()), self._opt(self.S2, lambda t: t.clone()))
+
+    def zeroed(self) -> StoreState:
+        """Empty store of the same shape — the A1 'empty memory' control."""
+        return StoreState(torch.zeros_like(self.M), torch.zeros_like(self.S),
+                          self._opt(self.M2, torch.zeros_like), self._opt(self.S2, torch.zeros_like))
+
+
+class DeltaRuleStore(nn.Module):
+    """Linear fast-weight store with gated delta-rule writes.
+
+    The module's *parameters* are only the three gate networks (skill, meta-trained
+    then frozen).  The *content* is a :class:`StoreState` owned by the caller.
+    """
+
+    def __init__(self, cfg: LinearStoreConfig):
+        super().__init__()
+        self.cfg = cfg
+
+        # Per-token lr gate on the (normalised) key.  Zero init ⇒ sigmoid(0)=0.5
+        # ⇒ θ₀ = max_lr/2 = 1.0 with the default ceiling.
+        self.lr_gate = nn.Linear(cfg.d_k, 1)
+        nn.init.zeros_(self.lr_gate.weight)
+        nn.init.zeros_(self.lr_gate.bias)
+
+        # Per-chunk scalar gates (pooled over the chunk's keys).
+        self.momentum_gate = nn.Linear(cfg.d_k, 1)
+        nn.init.zeros_(self.momentum_gate.weight)
+        nn.init.constant_(self.momentum_gate.bias, cfg.momentum_bias_init)
+
+        self.forget_gate = nn.Linear(cfg.d_k, 1)
+        nn.init.zeros_(self.forget_gate.weight)
+        nn.init.constant_(self.forget_gate.bias, cfg.forget_bias_init)
+
+    # ------------------------------------------------------------------
+    # State management
+    # ------------------------------------------------------------------
+    def init_state(self, batch_size: int, device=None, dtype=torch.float32) -> StoreState:
+        device = device if device is not None else self.lr_gate.weight.device
+        shape = (batch_size, self.cfg.d_v, self.cfg.d_k)
+        M2 = S2 = None
+        if self.cfg.match_store:
+            sh2 = (batch_size, self.cfg.d_k, self.cfg.d_k)
+            M2 = torch.zeros(sh2, device=device, dtype=dtype)
+            S2 = torch.zeros(sh2, device=device, dtype=dtype)
+        return StoreState(
+            torch.zeros(shape, device=device, dtype=dtype),
+            torch.zeros(shape, device=device, dtype=dtype),
+            M2,
+            S2,
+        )
+
+    # ------------------------------------------------------------------
+    # Write (analytic delta rule, chunk-wise, batched)
+    # ------------------------------------------------------------------
+    def write(
+        self,
+        keys: Tensor,  # [B, T, d_k]  (un-normalised; normalised here)
+        values: Tensor,  # [B, T, d_v]
+        state: StoreState,
+        write_mask: Tensor | None = None,  # [B, T] in [0,1]; gates the WHOLE update
+        stats: dict | None = None,  # optional out-dict: per-write gate means (diagnostics)
+    ) -> StoreState:
+        """Stream (keys, values) into the store; returns the new state.
+
+        Differentiable w.r.t. gate parameters and w.r.t. ``keys``/``values`` (and
+        hence the upstream encoders) via BPTT over chunks.  The inner loop itself
+        is closed-form — no ``torch.func``.
+
+        ``write_mask`` gates the *entire* chunk update, not just the lr gate: a
+        fully-masked chunk (padding, or filler under fact-only writes) is an exact
+        no-op — no forget decay, no momentum deposit — so selectivity actually
+        preserves earlier facts (the cross-session-persistence requirement;
+        without this, the per-chunk forget factor erodes the store on filler even
+        where the mask said "do not write").
+        """
+        cfg = self.cfg
+        B, T, _ = keys.shape
+        if state.batch_size != B:
+            raise ValueError(f"state batch {state.batch_size} != keys batch {B}")
+
+        k = rms_norm_heads(keys, cfg.n_heads)
+        v = rms_norm(values) if cfg.normalize_v else values
+
+        # Per-token learning rate (selectivity), optionally masked (padding /
+        # fact-span-only writes).
+        theta = torch.sigmoid(self.lr_gate(k)).squeeze(-1) * cfg.max_lr  # [B, T]
+        if write_mask is not None:
+            theta = theta * write_mask
+
+        M, S = state.M, state.S
+        M2, S2 = state.M2, state.S2  # auto-associative match store (None unless match_store)
+        eta_acc = M.new_zeros(())
+        alpha_acc = M.new_zeros(())
+        n_chunks = 0
+        for start in range(0, T, cfg.chunk_size):
+            end = min(start + cfg.chunk_size, T)
+            kc = k[:, start:end]  # [B, c, d_k]
+            vc = v[:, start:end]  # [B, c, d_v]
+            tc = theta[:, start:end]  # [B, c]
+            wc = (
+                write_mask[:, start:end] if write_mask is not None else tc.new_ones(tc.shape)
+            )  # [B, c]
+            active = wc.amax(dim=1, keepdim=True)  # [B,1] — 1 if the chunk has any written token
+            denom = wc.sum(dim=1, keepdim=True).clamp(min=1.0)  # [B,1]
+
+            # Chunk-wise: every token in the chunk sees start-of-chunk M.
+            pred = torch.einsum("bvk,bck->bcv", M, kc)
+            err = pred - vc  # [B, c, d_v]
+            # Gated, 1/d_k-scaled gradient: θ=1 ⇒ exact one-shot write.  (tc is 0
+            # on masked tokens, so G already excludes them.)
+            G = torch.einsum("bcv,bck->bvk", err * tc.unsqueeze(-1), kc) / cfg.d_k
+
+            # Mask-weighted pool so masked tokens don't shift the chunk's gates.
+            pooled = (kc * wc.unsqueeze(-1)).sum(dim=1) / denom  # [B, d_k]
+            eta = torch.sigmoid(self.momentum_gate(pooled)) * cfg.max_momentum  # [B,1]
+            alpha = torch.sigmoid(self.forget_gate(pooled)) * cfg.max_forget * active  # [B,1]
+
+            # ``active`` zeroes forget + momentum deposit on a fully-masked chunk:
+            # M = 1·M + (0·S − 0) = M (exact no-op).
+            S = (eta * active).unsqueeze(-1) * S - G
+            M = (1.0 - alpha).unsqueeze(-1) * M + S
+
+            if cfg.match_store:
+                # Same delta rule, key as its own value (auto-association k→k).
+                pred2 = torch.einsum("bjk,bck->bcj", M2, kc)
+                err2 = pred2 - kc
+                G2 = torch.einsum("bcj,bck->bjk", err2 * tc.unsqueeze(-1), kc) / cfg.d_k
+                S2 = (eta * active).unsqueeze(-1) * S2 - G2
+                M2 = (1.0 - alpha).unsqueeze(-1) * M2 + S2
+
+            if stats is not None:
+                eta_acc = eta_acc + (eta * active).mean()
+                alpha_acc = alpha_acc + alpha.mean()
+                n_chunks += 1
+
+        if stats is not None:
+            wsum = (
+                write_mask.sum().clamp(min=1.0)
+                if write_mask is not None
+                else torch.tensor(float(theta.numel()))
+            )
+            stats["lr_gate_mean"] = float(theta.sum() / wsum)  # mean over written tokens
+            stats["momentum_mean"] = float(eta_acc / max(n_chunks, 1))
+            stats["forget_mean"] = float(alpha_acc / max(n_chunks, 1))
+
+        return StoreState(M, S, M2, S2)
+
+    # ------------------------------------------------------------------
+    # Read
+    # ------------------------------------------------------------------
+    def read(self, queries: Tensor, state: StoreState) -> Tensor:
+        """``M q`` for RMS-normalised queries.  [B, T, d_k] → [B, T, d_v].
+
+        An empty store returns exactly zero — the natural 'abstain' (design doc
+        §2): downstream injection of out_proj(0)·g is a no-op, unlike an MLP
+        store, which returns *something* for every query.
+        """
+        q = rms_norm_heads(queries, self.cfg.n_heads)
+        return torch.einsum("bvk,btk->btv", state.M, q)
+
+    def match_score(self, queries: Tensor, state: StoreState) -> Tensor:
+        """Retrieval confidence ``qᵀM₂q / d_k`` ∈ ~[0,1] per position — "is q near
+        anything stored" (design review C3).  Zero (no signal) when there is no
+        match store, so the gate degrades to its read-magnitude behaviour."""
+        if state.M2 is None:
+            B, T, _ = queries.shape
+            return queries.new_zeros(B, T)
+        q = rms_norm_heads(queries, self.cfg.n_heads)
+        m2q = torch.einsum("bjk,btk->btj", state.M2, q)  # M₂ q
+        return torch.einsum("btj,btj->bt", q, m2q) / self.cfg.d_k
+
+    # ------------------------------------------------------------------
+    # Persistence (acceptance test A4)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def state_dict_for_persistence(state: StoreState) -> dict:
+        """M (and the match store M₂ if present), fp32.  Momentum is deliberately
+        not persisted (§5.5).  Format 2 adds the optional M₂; format-1 (M-only)
+        payloads still load."""
+        out = {"format": 2, "M": state.M.detach().to(torch.float32).cpu()}
+        if state.M2 is not None:
+            out["M2"] = state.M2.detach().to(torch.float32).cpu()
+        return out
+
+    def load_persisted_state(self, payload: dict, device=None) -> StoreState:
+        if payload.get("format") not in (1, 2):
+            raise ValueError(f"unknown store payload format: {payload.get('format')!r}")
+        dev = device or self.lr_gate.weight.device
+        M = payload["M"].to(device=dev, dtype=torch.float32)
+        if M.dim() != 3 or M.shape[1] != self.cfg.d_v or M.shape[2] != self.cfg.d_k:
+            raise ValueError(
+                f"persisted M shape {tuple(M.shape)} != cfg ({self.cfg.d_v},{self.cfg.d_k})"
+            )
+        M2 = S2 = None
+        if self.cfg.match_store:
+            if "M2" in payload:
+                M2 = payload["M2"].to(device=dev, dtype=torch.float32)
+            else:  # loading an M-only state into a match-store skill: empty M₂
+                M2 = torch.zeros(M.shape[0], self.cfg.d_k, self.cfg.d_k, device=dev, dtype=torch.float32)
+            S2 = torch.zeros_like(M2)
+        return StoreState(M, torch.zeros_like(M), M2, S2)
+
+    def save_state(self, state: StoreState, path: str) -> None:
+        torch.save(self.state_dict_for_persistence(state), path)
+
+    def load_state(self, path: str, device=None) -> StoreState:
+        return self.load_persisted_state(
+            torch.load(path, map_location="cpu", weights_only=True), device
+        )
