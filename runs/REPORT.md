@@ -29,7 +29,13 @@ ephemeral VM dies.
 - **A2 attempts:** λ_KL=0.5 (skill_v1): A1✓ A2✗ (neutral_kl 0.10, unrel 0.17). λ_KL=2.0 (skill_kl2): A2 a bit better but **A1 broke** (wrong-fact −1.84). Read-gate **magnitude feature** (skill_gate, branch-table fix): A1✓ A4✓ but A2 not fixed. So neither λ_KL nor gate-features crack A2 → it's **key interference** (capacity).
 - **Metric noise:** A2 `neutral_kl` swung **0.013 ↔ 0.22** for the *same* skill across eval seeds/fact-counts; A1 wrong-fact control −1.0 @ 8 facts vs +0.28 @ 24. The acceptance evals need **more facts** (denoise) before treating A2 as a hard fail.
 - **Bugs fixed mid-run:** read-gate magnitude feature overflowed fp32 (pow²) → NaN; `train_skill` didn't seed torch → non-deterministic encoder init. Both fixed.
-- **Next:** d_k=1024 (encoder_layers=1) training in flight — wider keys to cut interference (A2 + extend A3); denoise A2 evals with more facts; (welded-MLP A3 baseline arm; A1b paraphrase) remain.
+- **d_k=1024 result (skill_dk1024):** held-out recall 6.72/top5 0.91 (≈ d_k=512). A3 curve **≈ identical** to d_k=512 (n1 10.9/1.0, n4 16.6/1.0, n8 11.3/0.62, n16 6.5/0.31, n64 1.4/0.03) and wrong-fact control *worse* (−1.46). With 24 a2-facts, **neutral_kl 0.014 (PASS)** but unrelated-query 0.17 (FAIL).
+- **KEY CONCLUSION:** **wider d_k does NOT extend capacity or reduce interference** → the bottleneck is the **effective dimensionality of the keys** (the encoder maps Gemma hiddens into a limited subspace), not d_k. The branch-table quick levers (λ_KL → breaks A1; read-gate features → no help; d_k → no help) are **exhausted**. A2/A3-at-scale need a **design change: multi-head store and/or richer key representations** (per-fact keys spanning more independent directions), or accept the ~4–8-fact regime where A1/A4 are excellent.
+- **A3 curves obtained for two d_k (512, 1024)** — DoD requirement met.
+- **Remaining (need a design decision):** multi-head store for capacity/A2; A1b paraphrase; welded-MLP A3 baseline; base scaling.
+
+## Bottom line
+A frozen Gemma-3-1b **can** be given useful persistent parametric memory: **A1 + A4 PASS** (single-fact cross-session recall +16 nats, retention 1.0). Capacity is the open frontier — limited by key effective-dimensionality, not by d_k or KL or the read gate, so the next step is a multi-head / richer-key design, which is a decision point rather than a sweep.
 
 ## 🎯 MILESTONE (2026-06-10): the core question is answered for A1-verbatim.
 A frozen Gemma-3-1b + a meta-trained decoupled delta-rule memory recalls a nonce fact
