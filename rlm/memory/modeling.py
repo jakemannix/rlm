@@ -115,6 +115,15 @@ class TitansAugmentedLM(nn.Module):
             for p in self.base_model.parameters():
                 p.requires_grad = False
 
+        # Place the new memory + projection submodules on the same device and
+        # dtype as the (already-loaded) base model, so the wrapper is usable on
+        # whatever device the base sits on (CPU / CUDA / XLA) without the caller
+        # remembering a trailing ``.to(device)``.
+        ref = next(self.base_model.parameters(), None)
+        if ref is not None:
+            for sub in (self.k_proj, self.v_proj, self.q_proj, self.out_proj, self.memory):
+                sub.to(device=ref.device, dtype=ref.dtype)
+
         self._install_hook()
 
     # ------------------------------------------------------------------
@@ -225,7 +234,9 @@ class TitansAugmentedLM(nn.Module):
             # Persist across calls only in eval; detach so the graph can't grow.
             self._mem_state = {
                 "params": {k: v.to(hidden.dtype).detach() for k, v in new_state["params"].items()},
-                "momentum": {k: v.to(hidden.dtype).detach() for k, v in new_state["momentum"].items()},
+                "momentum": {
+                    k: v.to(hidden.dtype).detach() for k, v in new_state["momentum"].items()
+                },
             }
         out = self.out_proj(read.to(hidden.dtype))
         return hidden + out

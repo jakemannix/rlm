@@ -398,3 +398,37 @@ def test_memorizes_real_gemma_states():
         opt.step()
     rel = ((out - target).pow(2).mean() / target.pow(2).mean()).item()
     assert rel < 0.6, f"failed to memorize real states (rel-MSE {rel:.3f})"
+
+
+def test_wrapper_inherits_base_device_and_dtype():
+    """The wrapper's new submodules must land on the base model's device/dtype,
+    so callers never need a trailing ``.to(device)`` (works on CPU/CUDA/XLA)."""
+    from rlm.memory.modeling import TitansAugmentedLM
+
+    class _Cfg:
+        hidden_size = 16
+
+    class _Block(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    class _Base(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = _Cfg()
+            self.model = torch.nn.Module()
+            self.model.layers = torch.nn.ModuleList([_Block()])
+            self.embed = torch.nn.Linear(16, 16)  # gives the base a dtype/device to inherit
+
+        def forward(self, x):
+            return x
+
+    base = _Base().to(torch.float64)  # non-default dtype the new modules must match
+    aug = TitansAugmentedLM(
+        base, MemoryConfig(key_dim=0, value_dim=0, hidden_dim=8), freeze_base=True
+    )
+    ref = next(base.parameters())
+    for n, p in aug.named_parameters():
+        if not n.startswith("base_model"):
+            assert p.dtype == ref.dtype, f"{n}: dtype {p.dtype} != base {ref.dtype}"
+            assert p.device == ref.device, f"{n}: device {p.device} != base {ref.device}"
