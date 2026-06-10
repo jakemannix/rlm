@@ -143,7 +143,14 @@ def load_squad_records(n: int = 5000, hf_split: str = "train") -> list[dict]:
     """
     from datasets import load_dataset
 
-    ds = load_dataset("squad", split=hf_split)
+    try:  # canonical repo id (datasets>=3 deprecates the bare "squad" alias)
+        ds = load_dataset("rajpurkar/squad", split=hf_split)
+    except Exception:
+        ds = load_dataset("squad", split=hf_split)
+    # SQuAD is grouped by article, so the first N examples span only a handful of
+    # titles; shuffle (fixed seed) so records span all ~442 articles and the
+    # held-out-by-title split has enough distinct entities to be meaningful.
+    ds = ds.shuffle(seed=0)
     out: list[dict] = []
     for ex in ds:
         ans_list = ex["answers"]["text"]

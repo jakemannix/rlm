@@ -298,13 +298,20 @@ def build_cache(
             flush()
             shard.extend(keep)
 
+    skipped = 0
     for n in range(n_episodes):
-        pending.append(tokenize_episode(gen.sample_mix(mix), tok, bos))
+        # Real-corpus answers (arbitrary spans) can fail the tokenizer round-trip
+        # guard; skip those episodes rather than abort a long build.
+        try:
+            pending.append(tokenize_episode(gen.sample_mix(mix), tok, bos))
+        except ValueError:
+            skipped += 1
+            continue
         if len(pending) >= 64:
             process(pending)
             pending = []
         if (n + 1) % 1000 == 0:
-            print(f"cached {n + 1}/{n_episodes} episodes", flush=True)
+            print(f"cached {n + 1}/{n_episodes} episodes ({skipped} skipped)", flush=True)
     if pending:
         process(pending)
     flush()
