@@ -89,7 +89,7 @@ def run_baselines(model, tok, skill, facts, device, paraphrase, gen, write_mode)
     with the statement IN the prompt (the ceiling); retrieval = in-context with the
     top-1 retrieved statement.  (Earlier bug: used store-vs-no-store lift, which is
     0 by construction when use_store=False — it never measured the ceiling.)"""
-    mem, ctx, retr_hit, retr_ctx = [], [], [], []
+    mem, wrong, ctx, retr_hit, retr_ctx = [], [], [], [], []
     stmt_emb = torch.stack([mean_pool_embed(model, tok, f.statement, device) for f in facts])
     for i, f in enumerate(facts):
         q = query_of(f, paraphrase)
@@ -98,6 +98,12 @@ def run_baselines(model, tok, skill, facts, device, paraphrase, gen, write_mode)
         r_q = sess.score_answer(q, f.answer, use_store=True)
         floor_abs = r_q["gold_logprob_base"]  # base, query alone, no store
         mem.append(r_q["gold_logprob"] - floor_abs)  # memory's contribution
+        # wrong-fact control: store holds f, but we query a DIFFERENT fact g — the
+        # store's lift on g's answer is generic answer-type boosting, not recall
+        # (design-review §3: specific lift = target − wrong-fact is the honest A1b).
+        g = facts[(i + 1) % len(facts)]
+        rw = sess.score_answer(query_of(g, paraphrase), g.answer, use_store=True)
+        wrong.append(rw["gold_logprob"] - rw["gold_logprob_base"])
         ic = sess.score_answer(f.statement + " " + q, f.answer, use_store=False)
         ctx.append(ic["gold_logprob_base"] - floor_abs)  # in-context ceiling over floor
         qe = mean_pool_embed(model, tok, q, device)
@@ -105,14 +111,22 @@ def run_baselines(model, tok, skill, facts, device, paraphrase, gen, write_mode)
         retr_hit.append(float(hit == i))
         rr = sess.score_answer(facts[hit].statement + " " + q, f.answer, use_store=False)
         retr_ctx.append(rr["gold_logprob_base"] - floor_abs)  # in-context with the retrieved fact
-    return {
+    specific = [m - w for m, w in zip(mem, wrong, strict=True)]
+    out = {
         "floor_lift_nats": 0.0,  # reference
         "memory_lift_nats": mean(mem),
+        "wrong_fact_lift_nats": mean(wrong),
+        "specific_lift_nats": mean(specific),  # PRIMARY A1b metric (target − wrong-fact)
         "in_context_lift_nats": mean(ctx),
         "retrieval_at1": mean(retr_hit),
         "retrieval_in_context_lift_nats": mean(retr_ctx),
         "n": len(facts),
     }
+    # invariant: a *specific* memory cannot beat handing the model the passage;
+    # memory > in-context flags prior-shifting / generic boosting (review §3).
+    if out["memory_lift_nats"] > out["in_context_lift_nats"] + 0.5:
+        out["WARN_exceeds_ceiling"] = "memory_lift > in_context ceiling → prior-shifting, not recall"
+    return out
 
 
 def run_generative(model, tok, skill, facts, device, paraphrase, gen, write_mode):
@@ -196,7 +210,8 @@ def main():
         bank_s = fact_bank(gs, args.baseline_facts)
         base_runs.append(run_baselines(model, tok, skill, bank_s, args.device, args.paraphrase, gs, args.write_mode))
         gen_runs.append(run_generative(model, tok, skill, bank_s, args.device, args.paraphrase, gs, args.write_mode))
-    bkeys = ["floor_lift_nats", "memory_lift_nats", "in_context_lift_nats", "retrieval_at1", "retrieval_in_context_lift_nats"]
+    bkeys = ["memory_lift_nats", "wrong_fact_lift_nats", "specific_lift_nats",
+             "in_context_lift_nats", "retrieval_at1", "retrieval_in_context_lift_nats"]
 
     # scale + persistence once on the seed-0 bank (already worst-case over many facts)
     g_scale = RealCorpusGenerator(records=records, split="eval", seed=args.seed)
@@ -210,10 +225,12 @@ def main():
         "scale": run_scale(model, tok, skill, scale_bank, checkpoints, args.device, args.paraphrase, NEUTRAL, g_scale, args.write_mode),
     }
     b = report["baselines"]
-    print(f"\nbaselines (n_seeds={args.n_seeds}, mean±sd): "
-          f"floor {b['floor_lift_nats']['mean']:.2f}±{b['floor_lift_nats']['sd']:.2f} | "
-          f"memory {b['memory_lift_nats']['mean']:.2f}±{b['memory_lift_nats']['sd']:.2f} | "
-          f"in-context {b['in_context_lift_nats']['mean']:.2f} | retrieval@1 {b['retrieval_at1']['mean']:.2f}")
+    print(f"\nbaselines (n_seeds={args.n_seeds}, mean±sd nats over floor):")
+    print(f"  memory {b['memory_lift_nats']['mean']:.2f} | wrong-fact {b['wrong_fact_lift_nats']['mean']:.2f} "
+          f"| SPECIFIC {b['specific_lift_nats']['mean']:.2f}±{b['specific_lift_nats']['sd']:.2f} (primary A1b) "
+          f"| in-context {b['in_context_lift_nats']['mean']:.2f} | retrieval@1 {b['retrieval_at1']['mean']:.2f}")
+    if b["memory_lift_nats"]["mean"] > b["in_context_lift_nats"]["mean"] + 0.5:
+        print("  ⚠ memory_lift > in-context ceiling → prior-shifting / generic boosting, not specific recall")
     print(f"generative EM: {report['generative']['generative_exact_match']['mean']:.2f}"
           f"±{report['generative']['generative_exact_match']['sd']:.2f}")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
