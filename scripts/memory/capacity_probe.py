@@ -38,10 +38,11 @@ def hebbian(n: int, d_k: int, d_v: int, rank: int | None = None) -> float:
     return _recall1((k @ k.T / d_k) @ v, v)
 
 
-def delta(n: int, d_k: int, d_v: int, rank: int | None = None) -> float:
-    """The actual error-correcting delta-rule store (sequential writes)."""
+def delta(n: int, d_k: int, d_v: int, rank: int | None = None, theta: float = 1.0) -> float:
+    """The actual error-correcting delta-rule store (sequential writes) at init lr
+    ``theta`` (set via max_lr=2·theta, since the lr gate inits at sigmoid(0)·max_lr)."""
     k, v = _kv(n, d_k, d_v, rank or d_k)
-    store = DeltaRuleStore(LinearStoreConfig(d_k=d_k, d_v=d_v, chunk_size=1)).eval()
+    store = DeltaRuleStore(LinearStoreConfig(d_k=d_k, d_v=d_v, chunk_size=1, max_lr=2 * theta)).eval()
     st = store.init_state(1)
     with torch.no_grad():
         st = store.write(k.unsqueeze(0), v.unsqueeze(0), st)
@@ -71,6 +72,18 @@ def main() -> None:
     print(f"     {'N':>6} {'×d_k':>5} | {'linear M·q':>10} | {'softmax kv':>10}")
     for n in (256, 1024, 4096, 8192):
         print(f"     {n:>6} {n // 256:>4}x | {hebbian(n, 256, 1152):>10.2f} | {softmax_readout(n, 256, 1152):>10.2f}")
+
+    print("\nE. UPDATE RULE × KEY RANK — d_k=512, d_v=1152, recall@1 vs N")
+    print("   (lower lr is a ~10x lever EVEN at rank 46; rank is a SOFT degrader, not a 46-cap)")
+    NS = (64, 256, 1024, 2048)
+    for rank in (46, 512):
+        tag = "46 (≈ real frozen-base key rank)" if rank == 46 else "512 (= d_k, full rank)"
+        print(f"   -- key rank {tag} --")
+        print("     " + "rule".ljust(12) + " ".join(f"N={n:<5}" for n in NS))
+        for theta in (None, 1.0, 0.1, 0.03):
+            nm = "hebbian" if theta is None else f"delta θ={theta}"
+            vals = [hebbian(n, 512, 1152, rank) if theta is None else delta(n, 512, 1152, rank, theta) for n in NS]
+            print("     " + nm.ljust(12) + " ".join(f"{x:<7.2f}" for x in vals))
 
 
 if __name__ == "__main__":

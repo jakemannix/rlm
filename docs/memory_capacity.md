@@ -24,14 +24,17 @@ mutable, persisted, cross-session content. Read = `M q`, injected post-final-nor
   Probe: a Hebbian store at `d_k=256, d_v=1152` recalls **2000 facts (≈8× d_k) at 1.00**, and the
   capacity **grows with d_v** (d_v=64→0.07, 256→0.64, 1152→1.00 at N=2000). So "capacity ≈ d_k" was
   the *eroded* number, not the geometric one.
-- ⚠️ **Our delta rule throws most of that capacity away.** Same keys/values, `N=2000`: Hebbian (no
-  error correction) **1.00** vs the delta-rule store **0.13**. The error-correcting projector erodes
-  prior content whenever keys overlap — good for read-side interference at small N, **catastrophic
-  for capacity at large N**. We chose the update that is wrong for scale.
-- **The actual binding cap is key *rank*, ≈ 46.** With the frozen base emitting only ~46 independent
-  key directions (participation ratio of the answer-prefix hiddens ≈ 10–22; whitening+training lifts
-  trained keys to ≈ 46), you address ~46 facts regardless of how big the store or the value space is.
-  Probe: huge store (d_k=4096), N=2000, keys confined to rank 46 → **0.79**; rank 256 → **1.00**.
+- ⚠️ **Our delta rule (at lr θ=1) is the DOMINANT capacity killer — and lowering the lr recovers most
+  of it, even at low key rank.** Same keys/values, N=2000, full rank: Hebbian **1.00** vs delta θ=1
+  **0.13**; and at the *real* key rank 46, delta θ=1 caps ~64 facts while **delta θ=0.03 holds 0.60@1024
+  and Hebbian holds 0.98@1024**. The error-correcting projector erodes prior content whenever keys
+  overlap — catastrophic at θ=1, ~gone as θ→0. **A one-line `max_lr` drop (2.0→~0.06) is predicted to
+  be worth ~10×, no retraining of structure.**
+- ⚠️ **Key *rank* is a SOFT degrader, NOT a hard cap (an earlier "≈46-cap" claim here was wrong).**
+  Isotropic rank-46 keys recall **~1000 facts** (the high-d value space disambiguates overlapping keys).
+  Rank is PR ≈10–22 (answer-prefix hiddens) / ≈46 (whitened-trained keys). So the real ~8–16 ceiling is
+  **delta-θ=1 erosion + real-key *anisotropy* (template-clustered, cos 0.45–0.77, worse than isotropic
+  rank-46) + the streamed write↔query mismatch** — not a 46-fact wall.
 - **Therefore the module size and the value dimension are *ample*, not the constraint.** Scaling to
   10³–10⁴ is gated by **(a) the update rule, (b) key rank/addressing, (c) the streamed-write dynamics**
   — all addressing/dynamics problems with concrete *untested* levers. None of them is "make M bigger."
@@ -48,6 +51,12 @@ D. READOUT nonlinearity (d_k=256, d_v=1152, recall@1 vs N):
      N=  256(1x) 1024(4x) 4096(16x) 8192(32x)
      linear M·q   1.00    1.00     0.96      0.58
      softmax kv   1.00    1.00     1.00      1.00            ← softmax(=Hopfield/attention) > linear
+E. UPDATE RULE × KEY RANK (d_k=512, d_v=1152, recall@1 vs N) — lower lr is ~10× EVEN at rank 46:
+     key rank 46 (≈ real):     N=64   256    1024   2048
+       hebbian                 1.00   1.00   0.98   0.73
+       delta θ=1.0 (today)     0.84   0.23   0.05   0.03    ← the lr we run = the capacity killer
+       delta θ=0.03            1.00   1.00   0.60   0.30    ← just lowering lr ≈ recovers it
+     key rank 512 (full):  delta θ=1.0 → 0.51@1024 ; delta θ=0.03 → 1.00@1024, 0.92@2048
 ```
 Corroborating (`capacity_scaling.py`, the *delta* store with orthonormal keys): recall ≈ 1.0 up to
 N ≈ d_k then decays (d_k=512→1.0@256/0.78@1024; 8192→0.97@4096); realistic key-cosine ρ=0.3 collapses
@@ -58,12 +67,13 @@ frac_top5 0.75@8 → 0.28@64 at d_k=512, min_lift goes negative — caps at ~8�
 | Ceiling | Set by | Status | Lever |
 |---|---|---|---|
 | **Module / store** | ~ key-crowding bound, ≫ d_k; grows with d_v | **ample** (≥ tens × d_k; M is ~1–150 MB) | trivial: widen d_k / d_v is fixed |
-| **Update rule** | delta-rule erosion `≈ exp(−mθ/d_k)` under overlapping keys | **throwing away ~10×** | lower lr / Hebbian / decay-only / crossover schedule |
-| **Key rank (addressing)** | rank of `key_enc(post-norm hidden)` from the FROZEN base, ≈ 46 | **the binding cap today** | richer/nonlinear encoders, earlier-layer keys, multi-token keys |
+| **Update rule (DOMINANT)** | delta-rule erosion at θ=1; ≈ vanishes as θ→0 | **the main killer; ~10× recoverable even at rank 46 by lowering lr** | drop `max_lr` 2.0→~0.06; capacity-pressure training; novelty-gated lr |
+| **Key rank (addressing)** | rank of `key_enc(post-norm hidden)`, PR ≈10–46 | **soft degrader, NOT a 46-cap** (rank-46 → ~1000 with gentle write); real-key *anisotropy* is the bite | whitening (have it); earlier-layer keys; multi-token keys |
 | **Streaming dynamics** | in-session-write key ≠ standalone-query key; filler erosion; whole-statement writes | caps real recall ~8–16 below static prediction | per-token lr selectivity; align write/query key geometry |
 
-At every N we've measured, the **binding** ceiling is key rank + the delta rule + streaming — *never*
-the module size or the value dimension.
+At every N we've measured, the **binding** ceiling is the **delta-rule lr (dominant)**, then real-key
+*anisotropy* + the streamed write↔query mismatch — *never* the module size or the value dimension, and
+*not* a hard key-rank wall (rank-46 holds ~1000 with a gentle update).
 
 ## 4. The deep fork: linear readout vs softmax (why "it becomes retrieval at scale")
 `M q = Σ_i (k_i·q) v_i` is **linear attention** — capacity is bounded by superposition cross-talk and
@@ -76,10 +86,14 @@ trade away. So the strategic question is: how far can a *parametric* (collapsed-
 before slot/product-key/retrieval is simply the right tool?
 
 ## 5. Open R&D questions (for review)
-1. **Update rule for capacity.** The delta rule optimises read-interference at lr θ=1 and erodes at
-   scale. What's the right capacity/interference trade — Hebbian + decay? a θ schedule (high early,
-   low as the store fills)? a momentum/forgetting policy that protects old facts? *Fastest informative
-   experiment: re-run the real-text scale test with Hebbian / low-lr and see if capacity jumps.*
+1. **Update rule for capacity (highest priority — CPU-confirmed ~10× lever).** Probe E: at the real key
+   rank 46, dropping init lr θ from 1.0→0.03 moves the static ceiling from ~64 to ~1000 facts (Hebbian
+   ~1000); the error-correction is the dominant capacity killer at *every* rank. The lr gate sits at θ≈1
+   only because training never demanded >6 facts. Open: the right capacity/interference trade — a θ
+   schedule (bold when empty, gentle when full)? novelty-gated lr (full θ to *add*, ~0 to not erode,
+   gated by a `qᵀM₂q` match score)? Hebbian + forget-gate cleanup? **Fastest informative GPU experiment:
+   train with `max_lr≈0.06` (+ whitening) and re-run `eval_real --scale` — does the ~10× survive real
+   anisotropic keys + the streamed write↔query mismatch? (Probe E can't see those.)**
 2. **Key rank lifting.** Capacity ∝ effective key rank, capped at ~46 by the frozen base's answer-prefix
    geometry. A linear encoder can't exceed the input rank; a 2-layer GELU encoder lifts PR 20→35 in a
    toy probe. How high can rank go via (a) deeper/nonlinear encoders, (b) **earlier-layer keys**
