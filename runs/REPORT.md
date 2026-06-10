@@ -138,3 +138,20 @@ nats) but specificity breaks** (wrong-fact 4.77) and abstention is leaky (neutra
 frontier as synthetic, now on real text. Items 3-5 (baselines vs floor/in-context/retrieval, generative EM,
 scale+persistence worst-case) running. **Honest status: mechanism validated on real text (verbatim); content-
 addressable specificity + abstention are the open work, not the core recall.**
+
+### Milestone-3 items 3-5 (fixed baselines, n_seeds=3) — the "useful?" verdict (2026-06-10)
+Held-out real entities, answer-logprob nats over the no-context/no-store floor:
+| | memory | in-context CEILING | retrieval@1 | generative EM |
+|---|---|---|---|---|
+| **verbatim** | **+8.24±0.16** | +10.20±1.53 | 0.84 | **0.45** |
+| paraphrase (A1b) | +11.13±0.22 | +8.05±1.28 | 0.65 | 0.21 |
+
+Scale+persistence (ingest one fact/session, save→reload each, query ALL; frac_top5): verbatim 8:0.75 16:0.44 32:0.38 64:0.28; neutral_kl 0.19→0.45.
+
+**VERDICT (honest):**
+- **#3 WIN for verbatim:** memory recovers **81% of the in-context ceiling (8.24 / 10.20) with the context destroyed + persisted**, and is competitive with embed+kNN retrieval (≈8.17 in-context, retrieval@1 0.84) *without re-feeding the text*. That is the brief's win condition.
+- **#4 generative:** EM **0.45** verbatim (exact held-out answer ~half the time); no-regression FAILS — neutral_kl 0.19→0.45 (the loaded store perturbs neutral text, growing with N).
+- **#2 A1b:** recall *survives* paraphrase (lift high) but is **non-specific** (paraphrase memory 11.13 > its own in-context ceiling; wrong-fact 4.77) — content-addressability is leaky.
+- **#5 scale:** ~8 clean facts, degrading to 0.28@64 with min_lift going negative — caps at the handful regime on real text too, not O(10²).
+
+**Bottom line for the goal:** the frozen-base + learned-then-frozen skill + persistent mutable store **works on real held-out text** — verbatim recall reaches 81% of the in-context ceiling with context gone, generates the right answer 45% of the time, persists perfectly (A4=1.0), and Gemma's geometry does NOT cap it (real text PR 22 / cos 0.45, friendlier than synthetic). The **open frontiers are the same on real as synthetic**: content-addressable *specificity*, clean *abstention* (neutral_kl), and *capacity* beyond ~8-16 facts (C4 levers: heads / earlier-layer keys / routing). Mechanism: proven on real text. Production-scale multi-fact memory: a further research step, now well-characterized.
