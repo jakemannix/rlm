@@ -100,3 +100,15 @@ once C2 frees the GPU:
 Stats protocol: fixed seeded held-out bank (distinct entities), single base; the harness reports the
 worse-side metrics. **Highest-risk question (per the goal): does a real-text-meta-trained skill recall
 held-out real entities, or does the PR≈10 / cos-0.77 Gemma answer-prefix geometry cap it post-whitening.**
+
+### Real-corpus path de-risked on CPU + milestone-3 chained (2026-06-10)
+Verified locally with the real Gemma tokenizer (no GPU): bundled + SQuAD episodes tokenize with
+**0 round-trip failures**; build_cache now skips any that do (arbitrary real spans). SQuAD: use
+`rajpurkar/squad` + `shuffle(seed=0)` → 5000 records span **436 article titles**, held-out-by-title
+split = **327 train / 109 eval entities (0 overlap)**, 3883/1117 facts. So the real meta-training
+data + held-out eval are ready and meaningful.
+- **C2 is slow:** `pressure_whiten` runs ~4× slower (multifact k≤32 → ~1000-token ingests → longer
+  write-BPTT), ~50 min for 3000 steps. So the tail is sequential GPU: C2 (~45 min more) → milestone-3
+  (~50 min). Chained on the VM (`/content/chain_m3.sh`, detached): waits for C2, pulls latest, runs
+  `real_text_sweep.sh`. Keepalive holds the VM; results land in `runs/acc_real_*.json` +
+  `runs/real_eval_*.json` (+ `runs/chain.log` for progress).
