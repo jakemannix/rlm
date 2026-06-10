@@ -120,6 +120,7 @@ def main() -> None:
     )
 
     rng = random.Random(args.seed)
+    torch.manual_seed(args.seed)  # deterministic skill (encoder) init — was unseeded
     pool = ShardPool(cache, args.ram_shards, args.eval_episodes, rng)
 
     skill = MemorySkill(

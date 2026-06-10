@@ -118,8 +118,12 @@ class MemorySkill(nn.Module):
         """
         q = self.query_enc(hn)
         read = self.store.read(q, state)  # [B, T, d_model]
-        read_rms = read.pow(2).mean(dim=-1, keepdim=True).sqrt()  # [B, T, 1]
-        g = torch.sigmoid(self.read_gate(torch.cat([hn, read, read_rms], dim=-1)))  # [B, T, 1]
+        # ‖read‖ via norm() (overflow-safe — pow(2) overflows fp32 on the large
+        # reads an untrained store produces on long multisession ingests, and the
+        # zero-init gate weight would then do 0·inf = NaN), compressed with log1p
+        # so an occasional huge read can't saturate the gate during training.
+        read_rms = read.norm(dim=-1, keepdim=True) * (read.shape[-1] ** -0.5)  # [B, T, 1]
+        g = torch.sigmoid(self.read_gate(torch.cat([hn, read, torch.log1p(read_rms)], dim=-1)))
         delta = g * self.out_proj(read)
         aux = {
             "read_gate": g.squeeze(-1).detach(),
