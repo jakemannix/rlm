@@ -112,3 +112,13 @@ data + held-out eval are ready and meaningful.
   (~50 min). Chained on the VM (`/content/chain_m3.sh`, detached): waits for C2, pulls latest, runs
   `real_text_sweep.sh`. Keepalive holds the VM; results land in `runs/acc_real_*.json` +
   `runs/real_eval_*.json` (+ `runs/chain.log` for progress).
+
+### C2 result + capacity verdict (2026-06-10)
+A3 top5 vs N — base / whiten / **pressure_whiten** (C2 = data-pressure k≤32 + same-rel negatives + whiten + 2-layer enc):
+```
+ n:      1    2    4    8    16   32   64   128
+ base   1.00 1.00 1.00 0.50 0.38 0.19 0.12 0.02
+ whiten 1.00 1.00 1.00 0.88 0.44 0.25 0.09 0.03
+ press  1.00 1.00 1.00 0.88 0.44 0.34 0.23 0.03
+```
+**Capacity gate A3≥32 NOT met.** Interventions helped monotonically (n8 0.50→0.88; tail n32 0.19→0.34, n64 0.12→0.23) but clean recall holds only to **~8 facts**. With C1's finding that the *trained* keys are well-separated (cos 0.77→0.10, PR 10→46), the residual is **not static key geometry** — it's the **streamed multifact-session dynamics** (in-session write vs standalone query + filler erosion over long sessions). C2's data-pressure training (long k≤32 sessions) lifted the tail but didn't clear the gate. C4 levers (heads/earlier-layer keys/routing) are the remaining capacity options *if* the deployment-faithful test also stalls. **Milestone-3 item #5 (real facts across separate sessions with save/reload) is the real capacity test** and is now running.
