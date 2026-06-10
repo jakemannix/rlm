@@ -49,25 +49,36 @@ def mean(xs: list[float]) -> float:
     return sum(xs) / max(len(xs), 1)
 
 
-def run_a1_a4(model, tok, skill, gen: EpisodeGenerator, n_facts: int, device: str) -> dict:
+def query_of(fact, paraphrase: bool) -> str:
+    """A1b (content-addressable): query with the natural question instead of the
+    verbatim prefix; falls back to verbatim when the fact carries no paraphrase."""
+    if paraphrase and getattr(fact, "paraphrase_prompts", None):
+        return fact.paraphrase_prompts[0]
+    return fact.verbatim_prompt
+
+
+def run_a1_a4(
+    model, tok, skill, gen: EpisodeGenerator, n_facts: int, device: str, paraphrase: bool = False
+) -> dict:
     facts = [gen.make_fact() for _ in range(n_facts)]
     mem_lift, mem_top5, empty_lift, wrong_lift, a4_lift = [], [], [], [], []
     with tempfile.TemporaryDirectory() as td:
         for i, f in enumerate(facts):
+            q = query_of(f, paraphrase)  # ingest the statement; query the question (A1b) or prefix
             ingest = MemorySession(model, tok, skill, device=device)
             ingest.ingest_episode(recall_episode(gen, f))
-            r_same = ingest.score_answer(f.verbatim_prompt, f.answer)
+            r_same = ingest.score_answer(q, f.answer)
 
             path = str(Path(td) / f"s{i}.pt")
             ingest.save(path)
             fresh = MemorySession(model, tok, skill, device=device)  # A4: fresh session
             fresh.load(path)
-            r = fresh.score_answer(f.verbatim_prompt, f.answer)
-            r0 = fresh.score_answer(f.verbatim_prompt, f.answer, use_store=False)
+            r = fresh.score_answer(q, f.answer)
+            r0 = fresh.score_answer(q, f.answer, use_store=False)
 
             wrong = MemorySession(model, tok, skill, device=device)
             wrong.ingest_episode(recall_episode(gen, facts[(i + 1) % n_facts]))
-            rw = wrong.score_answer(f.verbatim_prompt, f.answer)
+            rw = wrong.score_answer(q, f.answer)
 
             mem_lift.append(r_same["first_token_lift_nats"])
             a4_lift.append(r["first_token_lift_nats"])
@@ -102,7 +113,9 @@ def mem_lift_safe(x: float) -> float:
     return x if abs(x) > 1e-9 else 1e-9
 
 
-def run_a2(model, tok, skill, gen: EpisodeGenerator, n: int, device: str) -> dict:
+def run_a2(
+    model, tok, skill, gen: EpisodeGenerator, n: int, device: str, paraphrase: bool = False
+) -> dict:
     kls, unchanged = [], []
     for _ in range(n):
         f, other = gen.make_fact(), gen.make_fact()
@@ -110,7 +123,7 @@ def run_a2(model, tok, skill, gen: EpisodeGenerator, n: int, device: str) -> dic
         sess.ingest_episode(recall_episode(gen, f))
         kls.append(sess.neutral_kl(NEUTRAL))
         with torch.no_grad():
-            r_mem = sess.score_answer(other.verbatim_prompt, other.answer)
+            r_mem = sess.score_answer(query_of(other, paraphrase), other.answer)
         unchanged.append(float(abs(r_mem["first_token_lift_nats"]) <= 0.5))
     a2 = {"neutral_kl_nats_per_tok": mean(kls), "unrelated_query_unchanged_frac": mean(unchanged)}
     a2["pass"] = (
@@ -119,7 +132,9 @@ def run_a2(model, tok, skill, gen: EpisodeGenerator, n: int, device: str) -> dic
     return a2
 
 
-def run_a3(model, tok, skill, gen: EpisodeGenerator, ns: list[int], device: str) -> list[dict]:
+def run_a3(
+    model, tok, skill, gen: EpisodeGenerator, ns: list[int], device: str, paraphrase: bool = False
+) -> list[dict]:
     curve = []
     for n in ns:
         facts = [gen.make_fact() for _ in range(n)]
@@ -129,7 +144,7 @@ def run_a3(model, tok, skill, gen: EpisodeGenerator, ns: list[int], device: str)
         )
         lifts, top5 = [], []
         for f in facts:
-            r = sess.score_answer(f.verbatim_prompt, f.answer)
+            r = sess.score_answer(query_of(f, paraphrase), f.answer)
             lifts.append(r["first_token_lift_nats"])
             top5.append(float(r["first_token_top5"]))
         point = {"n_facts": n, "mean_first_lift_nats": mean(lifts), "top5_frac": mean(top5)}
@@ -151,6 +166,18 @@ def main() -> None:
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dtype", default="bfloat16")
     ap.add_argument("--out", default="runs/acceptance.json")
+    ap.add_argument(
+        "--real-corpus",
+        action="store_true",
+        help="milestone-3: evaluate on held-out REAL facts (RealCorpusGenerator)",
+    )
+    ap.add_argument("--real-split", default="eval", choices=["train", "eval"])
+    ap.add_argument("--squad", action="store_true")
+    ap.add_argument(
+        "--paraphrase",
+        action="store_true",
+        help="A1b: query with the natural question, not the verbatim prefix (content-addressable)",
+    )
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -162,13 +189,24 @@ def main() -> None:
         .eval()
     )
     skill = MemorySkill.load(args.skill, device=args.device)
-    gen = EpisodeGenerator(seed=args.seed)
+    if args.real_corpus:
+        from rlm.memory.real_corpus import RealCorpusGenerator, load_squad_records
 
-    report = run_a1_a4(model, tok, skill, gen, args.facts, args.device)
-    report["A2"] = run_a2(model, tok, skill, gen, args.a2_facts, args.device)
+        records = load_squad_records() if args.squad else None
+        gen = RealCorpusGenerator(records=records, split=args.real_split, seed=args.seed)
+        print(
+            f"real-corpus eval: split={args.real_split}, {len(gen.records)} held-out records, "
+            f"paraphrase={args.paraphrase}"
+        )
+    else:
+        gen = EpisodeGenerator(seed=args.seed)
+
+    p = args.paraphrase
+    report = run_a1_a4(model, tok, skill, gen, args.facts, args.device, paraphrase=p)
+    report["A2"] = run_a2(model, tok, skill, gen, args.a2_facts, args.device, paraphrase=p)
     if args.a3:
         report["A3_curve"] = run_a3(
-            model, tok, skill, gen, [int(x) for x in args.a3.split(",")], args.device
+            model, tok, skill, gen, [int(x) for x in args.a3.split(",")], args.device, paraphrase=p
         )
 
     for name in ("A1", "A2", "A4"):
