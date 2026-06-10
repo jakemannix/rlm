@@ -40,6 +40,17 @@ def mean(xs):
     return sum(xs) / max(len(xs), 1)
 
 
+def agg(dicts, keys):
+    """mean ± sd of each key across per-seed result dicts (stats protocol)."""
+    out = {}
+    for k in keys:
+        vals = [d[k] for d in dicts]
+        m = mean(vals)
+        sd = (sum((v - m) ** 2 for v in vals) / max(len(vals) - 1, 1)) ** 0.5
+        out[k] = {"mean": m, "sd": sd}
+    return out
+
+
 def fact_bank(gen: RealCorpusGenerator, n: int):
     """n facts with DISTINCT entities (so 'ingest all, query each' has no duplicates)."""
     seen, facts = set(), []
@@ -146,6 +157,7 @@ def main():
     ap.add_argument("--skill", required=True)
     ap.add_argument("--squad", action="store_true")
     ap.add_argument("--baseline-facts", type=int, default=64)
+    ap.add_argument("--n-seeds", type=int, default=3, help="repeat baselines/generative over N held-out draws -> mean±sd")
     ap.add_argument("--scale", default="8,16,32,64,128")
     ap.add_argument("--paraphrase", action="store_true", help="query with questions (content-addressable)")
     ap.add_argument("--seed", type=int, default=1234)
@@ -161,22 +173,34 @@ def main():
     skill = MemorySkill.load(args.skill, device=args.device)
 
     records = load_squad_records() if args.squad else None
-    gen = RealCorpusGenerator(records=records, split="eval", seed=args.seed)
     checkpoints = [int(x) for x in args.scale.split(",")]
-    bank = fact_bank(gen, max(args.baseline_facts, max(checkpoints)))
-    print(f"held-out bank: {len(bank)} distinct-entity real facts, paraphrase={args.paraphrase}")
 
+    # baselines + generative over N seeds (different held-out draws) -> mean ± sd
+    base_runs, gen_runs = [], []
+    for s in range(args.n_seeds):
+        gs = RealCorpusGenerator(records=records, split="eval", seed=args.seed + s)
+        bank_s = fact_bank(gs, args.baseline_facts)
+        base_runs.append(run_baselines(model, tok, skill, bank_s, args.device, args.paraphrase))
+        gen_runs.append(run_generative(model, tok, skill, bank_s, args.device, args.paraphrase))
+    bkeys = ["floor_lift_nats", "memory_lift_nats", "in_context_lift_nats", "retrieval_at1", "retrieval_recall_top5"]
+
+    # scale + persistence once on the seed-0 bank (already worst-case over many facts)
+    scale_bank = fact_bank(RealCorpusGenerator(records=records, split="eval", seed=args.seed), max(checkpoints))
     report = {
-        "n_held_out": len(bank),
+        "n_held_out_entities": len({f.entity for f in scale_bank}),
         "paraphrase": args.paraphrase,
-        "baselines": run_baselines(model, tok, skill, bank[: args.baseline_facts], args.device, args.paraphrase),
-        "generative": run_generative(model, tok, skill, bank[: args.baseline_facts], args.device, args.paraphrase),
-        "scale": run_scale(model, tok, skill, bank, checkpoints, args.device, args.paraphrase, NEUTRAL),
+        "n_seeds": args.n_seeds,
+        "baselines": agg(base_runs, bkeys),
+        "generative": agg(gen_runs, ["generative_exact_match"]),
+        "scale": run_scale(model, tok, skill, scale_bank, checkpoints, args.device, args.paraphrase, NEUTRAL),
     }
     b = report["baselines"]
-    print(f"\nbaselines (n={b['n']}): floor {b['floor_lift_nats']:.2f} | memory {b['memory_lift_nats']:.2f} | "
-          f"in-context {b['in_context_lift_nats']:.2f} | retrieval@1 {b['retrieval_at1']:.2f}")
-    print(f"generative EM: {report['generative']['generative_exact_match']:.2f}")
+    print(f"\nbaselines (n_seeds={args.n_seeds}, mean±sd): "
+          f"floor {b['floor_lift_nats']['mean']:.2f}±{b['floor_lift_nats']['sd']:.2f} | "
+          f"memory {b['memory_lift_nats']['mean']:.2f}±{b['memory_lift_nats']['sd']:.2f} | "
+          f"in-context {b['in_context_lift_nats']['mean']:.2f} | retrieval@1 {b['retrieval_at1']['mean']:.2f}")
+    print(f"generative EM: {report['generative']['generative_exact_match']['mean']:.2f}"
+          f"±{report['generative']['generative_exact_match']['sd']:.2f}")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(report, indent=2))
     print(f"wrote {args.out}")
