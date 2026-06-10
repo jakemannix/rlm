@@ -14,6 +14,17 @@ learn at test time via online gradient updates on a small "memory MLP".
   (designed for Gemma but works with any HF causal model).
 - ``MemoryConfig``: hyper-parameter dataclass shared by the modules.
 
+The decoupled v1 design (``docs/design_consult_response.md``) lives alongside:
+
+- ``DeltaRuleStore`` / ``LinearStoreConfig`` / ``StoreState``: zero-init linear
+  fast-weight store with the analytic delta-rule update (the *content*).
+- ``MemorySkill`` / ``SkillConfig``: encoders, gates and readout (the *skill*),
+  shared by the cached-activation trainer and live deployment.
+- ``EpisodeTrainer`` / ``TrainerConfig``: meta-training from cached post-norm
+  activations — the base model never enters the training loop.
+- ``MemorySession``: live cross-session ingest/recall/persist on a frozen base.
+- ``EpisodeGenerator``: synthetic fact/recall/abstain/control episodes.
+
 Torch and transformers are optional dependencies; importing this package
 without ``torch`` installed only fails when the offending class is used.
 """
@@ -25,7 +36,28 @@ __all__ = [
     "TitansMemory",
     "MirasMemory",
     "TitansAugmentedLM",
+    "DeltaRuleStore",
+    "LinearStoreConfig",
+    "StoreState",
+    "MemorySkill",
+    "SkillConfig",
+    "EpisodeTrainer",
+    "TrainerConfig",
+    "MemorySession",
+    "EpisodeGenerator",
 ]
+
+_LAZY = {
+    "DeltaRuleStore": ("rlm.memory.linear_store", "DeltaRuleStore"),
+    "LinearStoreConfig": ("rlm.memory.linear_store", "LinearStoreConfig"),
+    "StoreState": ("rlm.memory.linear_store", "StoreState"),
+    "MemorySkill": ("rlm.memory.skill", "MemorySkill"),
+    "SkillConfig": ("rlm.memory.skill", "SkillConfig"),
+    "EpisodeTrainer": ("rlm.memory.trainer", "EpisodeTrainer"),
+    "TrainerConfig": ("rlm.memory.trainer", "TrainerConfig"),
+    "MemorySession": ("rlm.memory.session", "MemorySession"),
+    "EpisodeGenerator": ("rlm.memory.episodes", "EpisodeGenerator"),
+}
 
 
 def __getattr__(name: str):
@@ -42,4 +74,9 @@ def __getattr__(name: str):
         from rlm.memory.modeling import TitansAugmentedLM
 
         return TitansAugmentedLM
+    if name in _LAZY:
+        import importlib
+
+        mod, attr = _LAZY[name]
+        return getattr(importlib.import_module(mod), attr)
     raise AttributeError(f"module 'rlm.memory' has no attribute {name!r}")
