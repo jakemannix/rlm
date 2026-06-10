@@ -85,3 +85,41 @@ def test_meta_training_steps_stay_finite(gemma):
             opt.step()
     finally:
         aug.remove_hook()
+
+
+def test_meta_training_reaches_memory_and_reduces_loss(gemma):
+    """Meta-training through the wrapper must reach the memory MLP (not just the
+    projections/gates) and actually reduce loss. Guards the wrapper's
+    persist-and-detach behavior that previously kept the memory out of the graph."""
+    tok, model = gemma
+    aug = TitansAugmentedLM(model, MemoryConfig(hidden_dim=128, chunk_size=8), freeze_base=True)
+    aug.train()
+    try:
+        ids = tok(
+            "The secret passphrase is xylophone-marmalade-seven-blue.", return_tensors="pt"
+        ).input_ids
+        opt = torch.optim.Adam([p for p in aug.parameters() if p.requires_grad], lr=1e-3)
+        losses = []
+        for i in range(30):
+            out = aug(input_ids=ids, labels=ids)
+            opt.zero_grad()
+            out.loss.backward()
+            if i == 5:
+                # A step AFTER the first: the old persist-and-detach behavior
+                # reused a detached state here, zeroing the MLP gradient. The
+                # fix re-inits a fresh differentiable state every train forward.
+                mlp_grad = sum(
+                    p.grad.abs().sum()
+                    for n, p in aug.named_parameters()
+                    if n.startswith("memory.memory") and p.grad is not None
+                )
+                assert mlp_grad > 0, (
+                    "memory MLP gets no gradient after step 0 (persist-detach regression)"
+                )
+            losses.append(out.loss.item())
+            opt.step()
+        assert min(losses) < losses[0] - 0.3, (
+            f"meta-training did not reduce loss ({losses[0]:.3f} -> {min(losses):.3f})"
+        )
+    finally:
+        aug.remove_hook()

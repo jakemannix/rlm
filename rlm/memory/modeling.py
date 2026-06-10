@@ -188,35 +188,45 @@ class TitansAugmentedLM(nn.Module):
         if hidden.dim() != 3:
             return hidden
         bsz = hidden.shape[0]
-        if (
-            self._mem_state is None
-            or self._mem_state["params"][next(iter(self._mem_state["params"]))].shape[0] != bsz
-        ):
-            self.reset_memory(bsz, hidden.device, hidden.dtype)
 
         keys = self.k_proj(hidden)
         values = self.v_proj(hidden)
         queries = self.q_proj(hidden)
 
-        # Cast memory state to the hidden dtype so we don't fight mixed
-        # precision pipelines.
-        state = {
-            "params": {k: v.to(hidden.dtype) for k, v in self._mem_state["params"].items()},
-            "momentum": {k: v.to(hidden.dtype) for k, v in self._mem_state["momentum"].items()},
-        }
+        # Source state.  In TRAIN mode start each forward from a fresh,
+        # differentiable init state: the outer-loop gradient then reaches the
+        # initial memory parameters (not just the projections/gates) and each
+        # sequence is independent.  Persisting + detaching the state across
+        # calls — as the eval path does for memory-as-context across tokens /
+        # turns — would silently keep the memory MLP out of the graph, which is
+        # the meta-training bug this avoids.
+        if self.training:
+            src = self.memory.init_state(bsz, hidden.device, hidden.dtype, detach=False)
+        else:
+            if (
+                self._mem_state is None
+                or self._mem_state["params"][next(iter(self._mem_state["params"]))].shape[0] != bsz
+            ):
+                self.reset_memory(bsz, hidden.device, hidden.dtype)
+            src = self._mem_state
+
+        # Upcast to float32 for the online update's numerical stability; the
+        # memory module RMS-normalizes keys/values internally, so no boundary
+        # normalization is needed here.
         keys_f = keys.to(torch.float32)
         values_f = values.to(torch.float32)
         queries_f = queries.to(torch.float32)
         state_f = {
-            "params": {k: v.to(torch.float32) for k, v in state["params"].items()},
-            "momentum": {k: v.to(torch.float32) for k, v in state["momentum"].items()},
+            "params": {k: v.to(torch.float32) for k, v in src["params"].items()},
+            "momentum": {k: v.to(torch.float32) for k, v in src["momentum"].items()},
         }
         read, new_state = self.memory.read_write(keys_f, values_f, queries_f, state_f)
-        # Stash in original dtype.
-        self._mem_state = {
-            "params": {k: v.to(hidden.dtype).detach() for k, v in new_state["params"].items()},
-            "momentum": {k: v.to(hidden.dtype).detach() for k, v in new_state["momentum"].items()},
-        }
+        if not self.training:
+            # Persist across calls only in eval; detach so the graph can't grow.
+            self._mem_state = {
+                "params": {k: v.to(hidden.dtype).detach() for k, v in new_state["params"].items()},
+                "momentum": {k: v.to(hidden.dtype).detach() for k, v in new_state["momentum"].items()},
+            }
         out = self.out_proj(read.to(hidden.dtype))
         return hidden + out
 
