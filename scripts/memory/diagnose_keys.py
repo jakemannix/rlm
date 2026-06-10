@@ -96,6 +96,53 @@ def cosine_stats(x: torch.Tensor, labels: list[str | None], n_pairs: int = 20_00
     return out
 
 
+def paired_write_query_cosines(cache_dir: Path, skill, max_pairs: int = 2000) -> dict | None:
+    """D1a (design review): how well does the key written DURING the streamed
+    session (at the answer-binding position, in session context) match the key
+    the standalone QUERY produces for the same fact?  Same-fact vs cross-fact
+    cosine; the gap is the addressing margin that survives streaming.  Needs a
+    cache built with answer_mask (post answer-segment patch); returns None on
+    older caches."""
+    wk, qk = [], []
+    for shard_path in sorted(cache_dir.glob("shard_*.pt")):
+        for ep in torch.load(shard_path, weights_only=False):
+            q = ep["query"]
+            if ep.get("type") != "recall" or not bool(q["ce_in_loss"]) or len(q["ce_pos"]) == 0:
+                continue
+            sess = ep["sessions"][0]
+            am = sess.get("answer_mask")
+            if am is None:
+                return None
+            nz = am.nonzero()
+            if len(nz) == 0:
+                continue
+            wk.append(sess["hn"][int(nz[0])].to(torch.float32).unsqueeze(0))
+            qk.append(q["hn"][int(q["ce_pos"][0])].to(torch.float32).unsqueeze(0))
+            if len(wk) >= max_pairs:
+                break
+        if len(wk) >= max_pairs:
+            break
+    if len(wk) < 8:
+        return None
+    w, q_ = torch.cat(wk), torch.cat(qk)
+    if skill is not None:
+        with torch.no_grad():
+            w = skill.key_enc(skill.whiten(w))
+            q_ = skill.query_enc(skill.whiten(q_))
+    w, q_ = F.normalize(w, dim=-1), F.normalize(q_, dim=-1)
+    same = (w * q_).sum(-1)
+    g = torch.Generator().manual_seed(0)
+    perm = torch.randperm(len(w), generator=g)
+    cross = (w * q_[perm]).sum(-1)
+    return {
+        "n_pairs": int(len(w)),
+        "same_fact_cos_mean": float(same.mean()),
+        "same_fact_cos_p10": float(same.quantile(0.10)),
+        "cross_fact_cos_mean": float(cross.mean()),
+        "margin": float(same.mean() - cross.mean()),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Parts 2 & 3 — prediction
 # ---------------------------------------------------------------------------
@@ -188,6 +235,15 @@ def main() -> None:
             k = skill.key_enc(skill.whiten(x))
         report["trained_keys"] = {**spectrum_stats(k), **cosine_stats(k, labels)}
         print(f"trained keys: {json.dumps(report['trained_keys'], indent=2)}")
+
+    paired = paired_write_query_cosines(cache, MemorySkill.load(args.skill) if args.skill else None)
+    if paired is not None:
+        report["write_query_pairing"] = paired
+        print(f"\nD1a write-vs-query key pairing: {json.dumps(paired, indent=2)}")
+        print("→ same-fact cos ≈ cross-fact cos means streaming destroys addressing"
+              " (context-mismatch); a healthy gap means the bottleneck is erosion/selectivity.")
+    else:
+        print("\nD1a pairing: cache lacks answer_mask — rebuild cache for the write/query diagnostic")
 
     print("\npredicted A3 ceiling from measured geometry (top5 vs N):")
     pred = predicted_capacity_curve(x, W, args.d_k, ns, args.whiten_eps, args.q_noise, args.trials)

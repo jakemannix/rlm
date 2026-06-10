@@ -56,6 +56,47 @@ def softmax_readout(n: int, d_k: int, d_v: int, beta: float = 16.0, rank: int | 
     return _recall1(F.softmax(beta * (k @ k.T), -1) @ v, v)
 
 
+def fullvocab_arm(head_path: str) -> None:
+    """D0 (design review of memory_capacity.md): re-score probes A–C against the
+    REAL tied head with full-vocabulary argmax — values are actual embedding
+    rows, competitors are all |V| tokens, anisotropy and clustering included.
+    The among-N random-unit protocol above is the geometric upper bound; this is
+    the deployed readout."""
+    head = torch.load(head_path, weights_only=False)
+    W = head["W"].to(torch.float32)
+    print(f"\n== FULL-VOCAB arm (real head: |V|={W.shape[0]}, d_v={W.shape[1]}) ==")
+
+    def score(read: torch.Tensor, ids: torch.Tensor) -> tuple[float, float]:
+        logits = read @ W.T
+        rank = (logits > logits.gather(1, ids.unsqueeze(1))).sum(1)
+        return float((rank == 0).float().mean()), float((rank < 5).float().mean())
+
+    def kv_real(n: int, d_k: int, rank: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        basis = F.normalize(torch.randn(rank, d_k, generator=G), dim=-1)
+        k = F.normalize(torch.randn(n, rank, generator=G) @ basis, dim=-1)
+        ids = torch.randint(0, W.shape[0], (n,), generator=G)
+        return k, F.normalize(W[ids], dim=-1), ids
+
+    for name, d_k, rank, update in (
+        ("hebbian d_k=256 full-rank", 256, 256, "heb"),
+        ("delta   d_k=256 full-rank", 256, 256, "delta"),
+        ("hebbian d_k=4096 rank-46 ", 4096, 46, "heb"),
+        ("hebbian d_k=4096 rank-256", 4096, 256, "heb"),
+    ):
+        for n in (256, 1024, 2000):
+            k, v, ids = kv_real(n, d_k, rank)
+            if update == "heb":
+                read = (k @ k.T / d_k) @ v
+            else:
+                store = DeltaRuleStore(LinearStoreConfig(d_k=d_k, d_v=W.shape[1], chunk_size=1)).eval()
+                st = store.init_state(1)
+                with torch.no_grad():
+                    st = store.write(k.unsqueeze(0), v.unsqueeze(0), st)
+                    read = store.read(k.unsqueeze(0), st)[0]
+            t1, t5 = score(read, ids)
+            print(f"  {name}  N={n:>5}: top1 {t1:.2f}  top5 {t5:.2f}")
+
+
 def main() -> None:
     print("A. VALUE-DIM scaling — Hebbian recall@1, N=2000, d_k=256, full-rank keys")
     for d_v in (64, 256, 1152, 4096):
@@ -87,4 +128,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import sys
+
     main()
+    if len(sys.argv) > 1:
+        fullvocab_arm(sys.argv[1])  # usage: capacity_probe.py cache/<dir>/head.pt

@@ -30,7 +30,9 @@ class MemorySession:
         for p in self.model.parameters():
             p.requires_grad_(False)
         self.tok = tok
-        self.device = torch.device(device) if device is not None else next(model.parameters()).device
+        self.device = (
+            torch.device(device) if device is not None else next(model.parameters()).device
+        )
         self.skill = skill.to(self.device).eval()
         W, softcap = get_head(model)
         self.W = W.detach().to(self.device, torch.float32)
@@ -67,15 +69,36 @@ class MemorySession:
         self.ingest_ids(self.ids_for(text))
 
     @torch.no_grad()
-    def ingest_episode(self, ep: EpisodeText, fact_only: bool = False) -> None:
-        """Ingest every session of an :class:`EpisodeText`, optionally writing
-        only fact-span tokens (the oracle Step-1 configuration)."""
+    def ingest_episode(self, ep: EpisodeText, fact_only: bool = False, write_mode: str | None = None) -> None:
+        """Ingest every session of an :class:`EpisodeText`.
+
+        ``write_mode``: "all" (default), "fact" (statement tokens only — the
+        oracle Step-1 configuration; ``fact_only=True`` is the back-compat
+        spelling), or "answer" (only positions whose *target* is an answer
+        token — the D1b oracle-selectivity arm: the prompt-final binding plus
+        answer-internal continuations, ~2–5 writes per fact)."""
+        mode = write_mode or ("fact" if fact_only else "all")
+        if mode not in ("all", "fact", "answer"):
+            raise ValueError(f"unknown write_mode {mode!r}")
         bos = self.tok.bos_token_id
         for segs in ep.sessions:
-            ids, fact_mask = encode_segments(self.tok, segs, bos)
+            ids, fact_mask, answer_mask = encode_segments(self.tok, segs, bos)
             ids = ids.unsqueeze(0).to(self.device)
-            wm = fact_mask.unsqueeze(0).to(self.device) if fact_only else None
+            wm = None
+            if mode == "fact":
+                wm = fact_mask.unsqueeze(0).to(self.device)
+            elif mode == "answer":
+                tgt = torch.zeros_like(answer_mask)
+                tgt[:-1] = answer_mask[1:]
+                wm = tgt.unsqueeze(0).to(self.device)
             self.ingest_ids(ids, write_mask=wm)
+
+    @torch.no_grad()
+    def ingest_fact(self, fact, generator, write_mode: str = "all") -> None:
+        """Ingest one bare fact statement (no filler) under ``write_mode``,
+        using ``generator.fact_segments`` for the prompt/answer split."""
+        ep = EpisodeText("recall", [generator.fact_segments(fact)], fact.verbatim_prompt, fact.answer, None, [fact], fact)
+        self.ingest_episode(ep, write_mode=write_mode)
 
     # ------------------------------------------------------------------
     # Recall (read-only)
@@ -118,7 +141,9 @@ class MemorySession:
         }
 
     @torch.no_grad()
-    def generate_greedy(self, prompt: str, max_new_tokens: int = 12, read_scale: float = 1.0) -> str:
+    def generate_greedy(
+        self, prompt: str, max_new_tokens: int = 12, read_scale: float = 1.0
+    ) -> str:
         ids = self.ids_for(prompt)
         for _ in range(max_new_tokens):
             hn = postnorm_hiddens(self.model, ids).to(torch.float32)

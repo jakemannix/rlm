@@ -194,11 +194,26 @@ class EpisodeGenerator:
         s = " ".join(self.rng.choice(FILLER_SENTENCES) for _ in range(n_sentences))
         return Segment(" " + s, "filler")
 
+    def fact_segments(self, f: Fact) -> list[Segment]:
+        """Split a fact statement into prompt/answer/tail segments so the answer
+        span is independently maskable (write-selectivity experiments, design
+        review D1b: the binding that matters is exactly the positions whose
+        *target* is an answer token).  Falls back to a single segment if the
+        statement is not prompt+answer-prefixed (round-trip guard still applies)."""
+        composed = f.verbatim_prompt + f.answer
+        if f.statement.startswith(composed):
+            tail = f.statement[len(composed):]
+            segs = [Segment(" " + f.verbatim_prompt, "fact"), Segment(f.answer, "answer")]
+            if tail:
+                segs.append(Segment(tail, "fact"))
+            return segs
+        return [Segment(" " + f.statement, "fact")]
+
     def session_with_facts(self, facts: list[Fact], filler_lo: int = 1, filler_hi: int = 3) -> list[Segment]:
         rng = self.rng
         segs = [self.filler(rng.randint(filler_lo, filler_hi))]
         for f in facts:
-            segs.append(Segment(" " + f.statement, "fact"))
+            segs.extend(self.fact_segments(f))
             segs.append(self.filler(rng.randint(filler_lo, filler_hi)))
         return segs
 

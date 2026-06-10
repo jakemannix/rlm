@@ -34,7 +34,15 @@ READ_SCALES = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
 
 
 def recall_episode(gen: EpisodeGenerator, fact) -> EpisodeText:
-    return EpisodeText("recall", [gen.session_with_facts([fact])], fact.verbatim_prompt, fact.answer, None, [fact], fact)
+    return EpisodeText(
+        "recall",
+        [gen.session_with_facts([fact])],
+        fact.verbatim_prompt,
+        fact.answer,
+        None,
+        [fact],
+        fact,
+    )
 
 
 def main() -> None:
@@ -45,34 +53,59 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dtype", default="bfloat16")
-    ap.add_argument("--write-everything", action="store_true",
-                    help="write all ingest tokens instead of fact-span only (measures untrained-gate erosion)")
-    ap.add_argument("--tie-kq", action="store_true",
-                    help="use one encoder for keys and queries (design doc §4 Step 1: 'read with the same "
-                         "encoder as q'); required for an UNTRAINED skill to align k and q")
-    ap.add_argument("--bare-ingest", action="store_true",
-                    help="ingest the fact's bare statement (matched context) instead of a filler-wrapped "
-                         "session, so the binding-position hidden is identical to the query's by causality")
-    ap.add_argument("--chunk-size", type=int, default=4,
-                    help="store write chunk size (design doc Step 1 hand-build uses 1)")
+    ap.add_argument(
+        "--write-everything",
+        action="store_true",
+        help="write all ingest tokens instead of fact-span only (measures untrained-gate erosion)",
+    )
+    ap.add_argument(
+        "--tie-kq",
+        action="store_true",
+        help="use one encoder for keys and queries (design doc §4 Step 1: 'read with the same "
+        "encoder as q'); required for an UNTRAINED skill to align k and q",
+    )
+    ap.add_argument(
+        "--bare-ingest",
+        action="store_true",
+        help="ingest the fact's bare statement (matched context) instead of a filler-wrapped "
+        "session, so the binding-position hidden is identical to the query's by causality",
+    )
+    ap.add_argument(
+        "--chunk-size",
+        type=int,
+        default=4,
+        help="store write chunk size (design doc Step 1 hand-build uses 1)",
+    )
     ap.add_argument("--out", default="runs/oracle_write_read.json")
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=getattr(torch, args.dtype)).to(args.device).eval()
+    model = (
+        AutoModelForCausalLM.from_pretrained(args.model, dtype=getattr(torch, args.dtype))
+        .to(args.device)
+        .eval()
+    )
 
     torch.manual_seed(args.seed)
     d_model = model.get_input_embeddings().weight.shape[1]
-    skill = MemorySkill(SkillConfig(d_model=d_model, d_k=args.d_k, tie_kq=args.tie_kq,
-                                    store=LinearStoreConfig(chunk_size=args.chunk_size)))
+    skill = MemorySkill(
+        SkillConfig(
+            d_model=d_model,
+            d_k=args.d_k,
+            tie_kq=args.tie_kq,
+            store=LinearStoreConfig(chunk_size=args.chunk_size),
+        )
+    )
     gen = EpisodeGenerator(seed=args.seed)
     facts = [gen.make_fact() for _ in range(args.facts)]
 
     def ingest_fact(sess: MemorySession, fact) -> None:
         if args.bare_ingest:
-            sess.ingest(fact.statement)  # matched context: causal h at the binding position == query's
+            sess.ingest(
+                fact.statement
+            )  # matched context: causal h at the binding position == query's
         else:
             sess.ingest_episode(recall_episode(gen, fact), fact_only=not args.write_everything)
 
@@ -84,7 +117,9 @@ def main() -> None:
             state_path = str(Path(td) / f"state_{i}.pt")
             ingest.save(state_path)
 
-            recall = MemorySession(model, tok, skill, device=args.device)  # fresh session: context gone
+            recall = MemorySession(
+                model, tok, skill, device=args.device
+            )  # fresh session: context gone
             recall.load(state_path)
             wrong = MemorySession(model, tok, skill, device=args.device)
             ingest_fact(wrong, facts[(i + 1) % len(facts)])
@@ -93,7 +128,9 @@ def main() -> None:
             for s in READ_SCALES:
                 row["scales"][s] = {
                     "mem": recall.score_answer(f.verbatim_prompt, f.answer, read_scale=s),
-                    "empty": recall.score_answer(f.verbatim_prompt, f.answer, read_scale=s, use_store=False),
+                    "empty": recall.score_answer(
+                        f.verbatim_prompt, f.answer, read_scale=s, use_store=False
+                    ),
                     "wrong": wrong.score_answer(f.verbatim_prompt, f.answer, read_scale=s),
                 }
             rows.append(row)
@@ -103,6 +140,7 @@ def main() -> None:
     summary = {}
     print(f"\n{'scale':>6} {'mem lift':>9} {'mem top5':>9} {'empty lift':>11} {'wrong lift':>11}")
     for s in READ_SCALES:
+
         def mean(key: str, sub: str, s=s) -> float:
             return sum(r["scales"][s][key][sub] for r in rows) / len(rows)
 
@@ -113,19 +151,30 @@ def main() -> None:
             "wrong_first_lift": mean("wrong", "first_token_lift_nats"),
         }
         v = summary[s]
-        print(f"{s:>6} {v['mem_first_lift']:>9.2f} {v['mem_top5']:>9.2f} {v['empty_first_lift']:>11.2f} {v['wrong_first_lift']:>11.2f}")
+        print(
+            f"{s:>6} {v['mem_first_lift']:>9.2f} {v['mem_top5']:>9.2f} {v['empty_first_lift']:>11.2f} {v['wrong_first_lift']:>11.2f}"
+        )
 
-    passing = [s for s, v in summary.items()
-               if v["mem_first_lift"] >= 3.0 and v["mem_top5"] >= 0.9
-               and abs(v["empty_first_lift"]) < 1e-6 and abs(v["wrong_first_lift"]) <= 0.5]
+    passing = [
+        s
+        for s, v in summary.items()
+        if v["mem_first_lift"] >= 3.0
+        and v["mem_top5"] >= 0.9
+        and abs(v["empty_first_lift"]) < 1e-6
+        and abs(v["wrong_first_lift"]) <= 0.5
+    ]
     verdict = {"gate": "step1_oracle_write_read", "pass": bool(passing), "passing_scales": passing}
     print(f"\nVERDICT: {'PASS' if passing else 'FAIL'}  (read_scale ∈ {passing})")
     if not passing:
-        print("→ if Step 0 passed, debug key consistency (try keys from the literal answer position) "
-              "and per-fact interference before touching the trainer.")
+        print(
+            "→ if Step 0 passed, debug key consistency (try keys from the literal answer position) "
+            "and per-fact interference before touching the trainer."
+        )
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(json.dumps({"verdict": verdict, "summary": summary, "rows": rows}, indent=2))
+    Path(args.out).write_text(
+        json.dumps({"verdict": verdict, "summary": summary, "rows": rows}, indent=2)
+    )
     print(f"wrote {args.out}")
 
 

@@ -28,8 +28,10 @@ mutable, persisted, cross-session content. Read = `M q`, injected post-final-nor
   of it, even at low key rank.** Same keys/values, N=2000, full rank: Hebbian **1.00** vs delta θ=1
   **0.13**; and at the *real* key rank 46, delta θ=1 caps ~64 facts while **delta θ=0.03 holds 0.60@1024
   and Hebbian holds 0.98@1024**. The error-correcting projector erodes prior content whenever keys
-  overlap — catastrophic at θ=1, ~gone as θ→0. **A one-line `max_lr` drop (2.0→~0.06) is predicted to
-  be worth ~10×, no retraining of structure.**
+  overlap — catastrophic at θ=1, ~gone as θ→0. **A `max_lr` drop (2.0→~0.06; design rule θ* ≈ 0.3·d_eff/N_lifetime) is predicted
+  to be worth ~10× — but only WITH retraining (or at minimum a re-fit read gain): the probe metric is
+  scale-invariant in θ while deployment lift ∝ θ·gain, so an eval-only drop on the existing skill will
+  collapse recall and must not be read as refuting the lever (review §8-A1).**
 - ⚠️ **Key *rank* is a SOFT degrader, NOT a hard cap (an earlier "≈46-cap" claim here was wrong).**
   Isotropic rank-46 keys recall **~1000 facts** (the high-d value space disambiguates overlapping keys).
   Rank is PR ≈10–22 (answer-prefix hiddens) / ≈46 (whitened-trained keys). So the real ~8–16 ceiling is

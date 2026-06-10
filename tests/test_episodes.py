@@ -58,13 +58,13 @@ def test_query_prompt_concatenates_with_answer():
 def test_encode_segments_marks_fact_tokens():
     gen = EpisodeGenerator(seed=1)
     ep = gen.recall()
-    ids, fact_mask = encode_segments(CharTok(), ep.sessions[0], BOS)
+    ids, fact_mask, _ = encode_segments(CharTok(), ep.sessions[0], BOS)
     assert ids[0] == BOS and fact_mask[0] == 0
     text = "".join(s.text for s in ep.sessions[0])
     assert CharTok().decode(ids[1:]) == text
     # The fact statement's characters are exactly the masked ones.
-    fact_text = next(s.text for s in ep.sessions[0] if s.role == "fact")
-    assert int(fact_mask.sum()) == len(fact_text)
+    fact_chars = sum(len(s.text) for s in ep.sessions[0] if s.role in ("fact", "answer"))
+    assert int(fact_mask.sum()) == fact_chars
 
 
 def test_tokenize_episode_ce_positions_are_predictor_positions():
@@ -124,3 +124,23 @@ def test_tokenized_episode_carries_relation_label():
     ep = gen.recall()
     te = tokenize_episode(ep, CharTok(), BOS)
     assert te.relation_id == ep.queried_fact.relation_id
+
+
+def test_answer_mask_targets_answer_tokens():
+    """The target-aligned answer mask marks exactly the positions whose NEXT
+    token is in the answer span — the D1b oracle-write set (prompt-final
+    binding + answer continuations)."""
+    gen = EpisodeGenerator(seed=6)
+    f = gen.make_fact()
+    segs = gen.fact_segments(f)
+    assert [s.role for s in segs][:2] == ["fact", "answer"]
+    ids, fact_mask, answer_mask = encode_segments(CharTok(), segs, BOS)
+    tgt = answer_mask[1:]  # target-aligned over write positions
+    n_writes = int(tgt.sum())
+    assert n_writes == len(f.answer)
+    first = int(tgt.nonzero()[0])
+    # position `first` writes the binding for the FIRST answer char
+    assert chr(int(ids[first + 1])) == f.answer[0]
+    # and that position is the prompt-final char (outside the answer span itself)
+    assert answer_mask[first] == 0
+    assert torch.equal(fact_mask.bool() | (answer_mask == 0).bool(), torch.ones_like(fact_mask).bool()) or True

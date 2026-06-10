@@ -64,6 +64,13 @@ def fact_bank(gen: RealCorpusGenerator, n: int):
     return facts
 
 
+def ingest_one(sess, f, gen, write_mode: str) -> None:
+    if write_mode == "all":
+        sess.ingest(f.statement)
+    else:
+        sess.ingest_fact(f, gen, write_mode=write_mode)
+
+
 def query_of(f, paraphrase):
     return f.paraphrase_prompts[0] if (paraphrase and f.paraphrase_prompts) else f.verbatim_prompt
 
@@ -75,7 +82,7 @@ def mean_pool_embed(model, tok, text, device):
 
 
 # --------------------------------------------------------------------------
-def run_baselines(model, tok, skill, facts, device, paraphrase):
+def run_baselines(model, tok, skill, facts, device, paraphrase, gen, write_mode):
     """All lifts are in answer-logprob NATS over the no-context/no-store FLOOR
     (base scoring the answer from the query alone), so the conditions are
     comparable: memory = store's contribution at the query; in_context = the base
@@ -87,7 +94,7 @@ def run_baselines(model, tok, skill, facts, device, paraphrase):
     for i, f in enumerate(facts):
         q = query_of(f, paraphrase)
         sess = MemorySession(model, tok, skill, device=device)
-        sess.ingest(f.statement)
+        ingest_one(sess, f, gen, write_mode)
         r_q = sess.score_answer(q, f.answer, use_store=True)
         floor_abs = r_q["gold_logprob_base"]  # base, query alone, no store
         mem.append(r_q["gold_logprob"] - floor_abs)  # memory's contribution
@@ -108,17 +115,17 @@ def run_baselines(model, tok, skill, facts, device, paraphrase):
     }
 
 
-def run_generative(model, tok, skill, facts, device, paraphrase):
+def run_generative(model, tok, skill, facts, device, paraphrase, gen, write_mode):
     em = []
     for f in facts:
         sess = MemorySession(model, tok, skill, device=device)
-        sess.ingest(f.statement)
+        ingest_one(sess, f, gen, write_mode)
         out = sess.generate_greedy(query_of(f, paraphrase), max_new_tokens=8)
         em.append(float(f.answer.strip().lower() in out.lower()))
     return {"generative_exact_match": mean(em), "n": len(facts)}
 
 
-def run_scale(model, tok, skill, facts, checkpoints, device, paraphrase, neutral):
+def run_scale(model, tok, skill, facts, checkpoints, device, paraphrase, neutral, gen, write_mode):
     """Ingest the bank one fact at a time, save→reload between each (deployment
     regime), and at each checkpoint query ALL facts so far."""
     curve = []
@@ -126,7 +133,7 @@ def run_scale(model, tok, skill, facts, checkpoints, device, paraphrase, neutral
         path = str(Path(td) / "store.pt")
         sess = MemorySession(model, tok, skill, device=device)
         for k, f in enumerate(facts, 1):
-            sess.ingest(f.statement)
+            ingest_one(sess, f, gen, write_mode)
             sess.save(path)
             sess.load(path)  # round-trip the persisted store every fact
             if k in checkpoints:
@@ -168,6 +175,9 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dtype", default="bfloat16")
     ap.add_argument("--out", default="runs/real_eval.json")
+    ap.add_argument("--write-mode", default="all", choices=["all", "fact", "answer"],
+                    help="ingest write selectivity (D1b oracle arm: 'answer' writes only "
+                         "answer-binding positions, ~2-5 writes/fact)")
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -184,19 +194,20 @@ def main():
     for s in range(args.n_seeds):
         gs = RealCorpusGenerator(records=records, split="eval", seed=args.seed + s)
         bank_s = fact_bank(gs, args.baseline_facts)
-        base_runs.append(run_baselines(model, tok, skill, bank_s, args.device, args.paraphrase))
-        gen_runs.append(run_generative(model, tok, skill, bank_s, args.device, args.paraphrase))
+        base_runs.append(run_baselines(model, tok, skill, bank_s, args.device, args.paraphrase, gs, args.write_mode))
+        gen_runs.append(run_generative(model, tok, skill, bank_s, args.device, args.paraphrase, gs, args.write_mode))
     bkeys = ["floor_lift_nats", "memory_lift_nats", "in_context_lift_nats", "retrieval_at1", "retrieval_in_context_lift_nats"]
 
     # scale + persistence once on the seed-0 bank (already worst-case over many facts)
-    scale_bank = fact_bank(RealCorpusGenerator(records=records, split="eval", seed=args.seed), max(checkpoints))
+    g_scale = RealCorpusGenerator(records=records, split="eval", seed=args.seed)
+    scale_bank = fact_bank(g_scale, max(checkpoints))
     report = {
         "n_held_out_entities": len({f.entity for f in scale_bank}),
         "paraphrase": args.paraphrase,
         "n_seeds": args.n_seeds,
         "baselines": agg(base_runs, bkeys),
         "generative": agg(gen_runs, ["generative_exact_match"]),
-        "scale": run_scale(model, tok, skill, scale_bank, checkpoints, args.device, args.paraphrase, NEUTRAL),
+        "scale": run_scale(model, tok, skill, scale_bank, checkpoints, args.device, args.paraphrase, NEUTRAL, g_scale, args.write_mode),
     }
     b = report["baselines"]
     print(f"\nbaselines (n_seeds={args.n_seeds}, mean±sd): "

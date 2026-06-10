@@ -51,28 +51,38 @@ class TokenizedEpisode:
     probe_tgt: Tensor
 
 
-def encode_segments(tok, segments, bos_id: int | None) -> tuple[Tensor, Tensor]:
-    """Concatenate per-segment encodings after BOS; return (ids, fact_mask)."""
+def encode_segments(tok, segments, bos_id: int | None) -> tuple[Tensor, Tensor, Tensor]:
+    """Concatenate per-segment encodings after BOS.
+
+    Returns ``(ids, fact_mask, answer_mask)`` — fact_mask covers the whole fact
+    statement (fact + answer roles, preserving the original semantics);
+    answer_mask covers answer-role tokens only.  NB masks are *position*-aligned;
+    the write-selectivity mask wants *target*-aligned (position t writes the
+    binding for token t+1), which the cache builder and session derive as
+    ``answer_mask[1:]``."""
     ids: list[int] = [] if bos_id is None else [bos_id]
     fact: list[float] = [] if bos_id is None else [0.0]
+    ans: list[float] = [] if bos_id is None else [0.0]
     for seg in segments:
         seg_ids = tok(seg.text, add_special_tokens=False)["input_ids"]
         ids.extend(seg_ids)
-        fact.extend([1.0 if seg.role == "fact" else 0.0] * len(seg_ids))
-    return torch.tensor(ids, dtype=torch.long), torch.tensor(fact)
+        is_ans = seg.role == "answer"
+        fact.extend([1.0 if (seg.role == "fact" or is_ans) else 0.0] * len(seg_ids))
+        ans.extend([1.0 if is_ans else 0.0] * len(seg_ids))
+    return torch.tensor(ids, dtype=torch.long), torch.tensor(fact), torch.tensor(ans)
 
 
 def tokenize_episode(ep: EpisodeText, tok, bos_id: int | None) -> TokenizedEpisode:
     sessions = []
     for segs in ep.sessions:
-        ids, fact_mask = encode_segments(tok, segs, bos_id)
+        ids, fact_mask, answer_mask = encode_segments(tok, segs, bos_id)
         decoded = tok.decode(ids[1:] if bos_id is not None else ids)
         joined = "".join(s.text for s in segs)
         if decoded.strip() != joined.strip():
             raise ValueError(
                 f"segment tokenisation round-trip mismatch:\n {decoded!r}\n vs {joined!r}"
             )
-        sessions.append({"ids": ids, "fact_mask": fact_mask})
+        sessions.append({"ids": ids, "fact_mask": fact_mask, "answer_mask": answer_mask})
 
     prompt_ids = tok(ep.query_prompt, add_special_tokens=False)["input_ids"]
     prompt = ([bos_id] if bos_id is not None else []) + prompt_ids
@@ -272,6 +282,10 @@ def build_cache(
                     "hn": h[:-1].to(dtype),
                     "e_next_ids": sess["ids"][1:].clone(),
                     "fact_mask": sess["fact_mask"][:-1].clone(),
+                    # target-aligned: position t's write binds token t+1, so the
+                    # answer-binding positions are those whose TARGET is an
+                    # answer token (includes the prompt-final position).
+                    "answer_mask": sess["answer_mask"][1:].clone(),
                 }
                 for sess, h in zip(te.sessions, sh, strict=True)
             ]
