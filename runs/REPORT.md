@@ -22,7 +22,7 @@ ephemeral VM dies.
 | 2a — build cache (20k) | shards+head+meta written | ✅ done | `cache/gemma1b_v1`, 20 shards, ~min on L4 |
 | 2b — train skill (4k steps, d_k=512, batch 8) | held-out recall≥3, top5≥0.8 | ✅ **PASS** | final held-out recall **+6.39 nats**, top5 **0.98**; gates healthy (no collapse). λ_KL=0.5. |
 | 2c — live acceptance (24 facts) | **A1 + A4 PASS** | ✅✅ **A1 PASS, A4 PASS** | **A1**: lift **+16.25 nats**, top5 **1.00**, empty 0.00, wrong-fact **−0.22**. **A4**: retention **1.00** (real disk round-trip into a fresh session). |
-| 3 — A2 abstention | A2 PASS without losing A1 | 🔄 next | **A2 FAIL** at λ_KL=0.5: neutral_kl 0.10 (>0.02), unrelated-query-unchanged 0.17 (<0.9) → branch table: raise `--lambda-kl`. |
+| 3 — A2 abstention | A2 PASS without losing A1 | 🔄 in progress | λ_KL=0.5 (skill_v1): A1 PASS, A2 FAIL (neutral_kl 0.10, unrelated 0.17). λ_KL=2.0 (skill_kl2): A2 improved (kl 0.072, unrel 0.33) but **A1 broke** (wrong-fact −1.84) — confirms branch table "raise λ_KL → A1 degrades → capacity is the issue". Both A2 + wrong-fact = key **interference** → fix via wider d_k + deeper encoders (skill_dk1024). |
 | 4 — A3 capacity | interference curve per d_k | ⏳ pending | |
 
 ## 🎯 MILESTONE (2026-06-10): the core question is answered for A1-verbatim.
