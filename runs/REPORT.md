@@ -122,3 +122,19 @@ A3 top5 vs N — base / whiten / **pressure_whiten** (C2 = data-pressure k≤32 
  press  1.00 1.00 1.00 0.88 0.44 0.34 0.23 0.03
 ```
 **Capacity gate A3≥32 NOT met.** Interventions helped monotonically (n8 0.50→0.88; tail n32 0.19→0.34, n64 0.12→0.23) but clean recall holds only to **~8 facts**. With C1's finding that the *trained* keys are well-separated (cos 0.77→0.10, PR 10→46), the residual is **not static key geometry** — it's the **streamed multifact-session dynamics** (in-session write vs standalone query + filler erosion over long sessions). C2's data-pressure training (long k≤32 sessions) lifted the tail but didn't clear the gate. C4 levers (heads/earlier-layer keys/routing) are the remaining capacity options *if* the deployment-faithful test also stalls. **Milestone-3 item #5 (real facts across separate sessions with save/reload) is the real capacity test** and is now running.
+
+## 🎯 MILESTONE-3 RESULT — frozen-base memory works on HELD-OUT REAL text (2026-06-10)
+Skill meta-trained on SQuAD (327 train entities, +whiten), evaluated on **109 held-out entities never seen in training**:
+| query | A1 lift | top5 | empty | wrong-fact | A4 retention | A2 neutral_kl |
+|---|---|---|---|---|---|---|
+| verbatim | **+4.31 nats** | 0.72 | 0.00 | **0.06** ✓ | **1.00** ✓ | 0.20 |
+| paraphrase (A1b) | **+7.17 nats** | 0.55 | 0.00 | 4.77 ✗ | 1.00 ✓ | 0.20 |
+
+**The load-bearing question is answered: a real-text-meta-trained skill DOES recall held-out real facts across a
+session boundary** — Gemma's addressing geometry does NOT cap it (real text is friendlier than synthetic:
+PR 22 vs 10, mean|cos| 0.45 vs 0.77; predicted A3 raw ~0.9 to n64). Verbatim recall is solid (+4.3 nats, clean
+wrong-fact control 0.06, perfect retention) though shy of strict top5≥0.8. **A1b: recall survives paraphrase (+7.2
+nats) but specificity breaks** (wrong-fact 4.77) and abstention is leaky (neutral_kl 0.20) — same specificity/A2
+frontier as synthetic, now on real text. Items 3-5 (baselines vs floor/in-context/retrieval, generative EM,
+scale+persistence worst-case) running. **Honest status: mechanism validated on real text (verbatim); content-
+addressable specificity + abstention are the open work, not the core recall.**
