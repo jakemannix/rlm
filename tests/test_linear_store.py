@@ -218,3 +218,35 @@ def test_multihead_one_shot_recall_is_exact():
 def test_multihead_requires_divisible_d_k():
     with pytest.raises(ValueError):
         LinearStoreConfig(d_k=100, n_heads=8)
+
+
+def test_zca_whitening_decorrelates_and_roundtrips(tmp_path):
+    """fit_zca yields ~identity covariance; whitening persists through
+    MemorySkill.save/load; an empty store still injects exactly nothing."""
+    from rlm.memory.skill import MemorySkill, SkillConfig, fit_zca
+
+    torch.manual_seed(0)
+    d = 24
+    cents = torch.randn(5, d) * 4.0  # anisotropic, template-clustered inputs
+    x = cents[torch.randint(0, 5, (4000,))] + 0.3 * torch.randn(4000, d)
+    mean, T = fit_zca(x, eps_frac=1e-3)
+    xw = (x - mean) @ T.T
+    cov = xw.T @ xw / (len(xw) - 1)
+    off = cov - torch.eye(d)
+    assert off.abs().max() < 0.15, f"whitened cov not ~I (max |dev| {off.abs().max():.3f})"
+
+    skill = MemorySkill(SkillConfig(d_model=d, d_k=16))
+    skill.set_whitening(mean, T)
+    hn = x[:6].reshape(1, 6, d)
+    state = skill.init_state(1)
+    state = skill.write(hn, torch.randn(1, 6, d), state)
+    assert state.M.abs().sum() > 0
+
+    delta, _ = skill.read_delta(hn, skill.init_state(1))  # empty store
+    assert torch.all(delta == 0)
+
+    p = tmp_path / "skill.pt"
+    skill.save(str(p))
+    loaded = MemorySkill.load(str(p))
+    assert loaded.cfg.whiten
+    assert torch.allclose(loaded.whiten_T, skill.whiten_T)

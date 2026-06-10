@@ -90,6 +90,13 @@ def main() -> None:
         default=0,
         help="curriculum: write only fact spans for the first N steps",
     )
+    ap.add_argument("--whiten", action="store_true",
+                    help="fit ZCA on the cached addressing population (query hn at the "
+                         "answer-prefix position + session hn at fact tokens) and install "
+                         "it in the skill before training — the capacity lever from the "
+                         "design review (template-direction interference)")
+    ap.add_argument("--whiten-eps", type=float, default=1e-3)
+    ap.add_argument("--whiten-vectors", type=int, default=50_000)
     ap.add_argument("--ram-shards", type=int, default=8)
     ap.add_argument("--rotate-every", type=int, default=200)
     ap.add_argument("--eval-episodes", type=int, default=256)
@@ -136,6 +143,30 @@ def main() -> None:
             store=LinearStoreConfig(chunk_size=args.chunk_size),
         )
     )
+    if args.whiten:
+        from rlm.memory.skill import fit_zca
+
+        vecs: list[torch.Tensor] = []
+        n = 0
+        for shard in pool.pool:
+            for ep in shard:
+                q = ep["query"]
+                if bool(q["ce_in_loss"]) and len(q["ce_pos"]) > 0:
+                    vecs.append(q["hn"][q["ce_pos"][0]].unsqueeze(0))
+                for sess in ep["sessions"]:
+                    fm = sess["fact_mask"] > 0
+                    if fm.any():
+                        vecs.append(sess["hn"][fm])
+                n += vecs[-1].shape[0] if vecs else 0
+                if n >= args.whiten_vectors:
+                    break
+            if n >= args.whiten_vectors:
+                break
+        X = torch.cat(vecs)[: args.whiten_vectors].to(torch.float32)
+        mean, T = fit_zca(X, eps_frac=args.whiten_eps)
+        skill.set_whitening(mean, T)
+        print(f"whitening fitted on {X.shape[0]} addressing vectors (eps_frac={args.whiten_eps})")
+
     cfg = TrainerConfig(
         lr=args.lr,
         steps=args.steps,

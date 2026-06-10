@@ -133,9 +133,24 @@ class EpisodeText:
 
 
 class EpisodeGenerator:
-    def __init__(self, seed: int = 0, paraphrase_prob: float = 0.0):
+    def __init__(
+        self,
+        seed: int = 0,
+        paraphrase_prob: float = 0.0,
+        multifact_k: tuple[int, int] = (2, 6),
+        same_relation_control_prob: float = 0.0,
+    ):
+        """``multifact_k`` bounds how many facts a multifact episode ingests — this
+        is the *capacity pressure* on the key encoder: it has no gradient reason to
+        separate more facts than training episodes ever contain.
+        ``same_relation_control_prob`` makes control episodes hard negatives
+        (ingested and queried facts share a relation template, differ only in
+        entity) — by default random fact pairs collide on relation only ~1/25 of
+        the time, so the encoder gets almost no pressure to encode entities."""
         self.rng = random.Random(seed)
         self.paraphrase_prob = paraphrase_prob
+        self.multifact_k = multifact_k
+        self.same_relation_control_prob = same_relation_control_prob
 
     # -- nonce builders -------------------------------------------------
     def nonce_word(self, syllables: int = 2, capitalize: bool = True) -> str:
@@ -165,8 +180,8 @@ class EpisodeGenerator:
             return " " + self.nonce_word(3, capitalize=False)
         return " " + self.nonce_word(2) + "-" + self.nonce_word(2, capitalize=False)  # "Velka-dorin"
 
-    def make_fact(self) -> Fact:
-        rel = self.rng.choice(RELATIONS)
+    def make_fact(self, relation: dict | None = None) -> Fact:
+        rel = relation if relation is not None else self.rng.choice(RELATIONS)
         entity = self.nonce_entity()
         answer = self.nonce_answer()
         stmt_full = rel["stmt"].format(e=entity, a=answer)
@@ -196,7 +211,7 @@ class EpisodeGenerator:
         )
 
     def multifact(self, k: int | None = None) -> EpisodeText:
-        k = k or self.rng.randint(2, 6)
+        k = k or self.rng.randint(*self.multifact_k)
         facts = [self.make_fact() for _ in range(k)]
         target = self.rng.choice(facts)
         return EpisodeText(
@@ -229,7 +244,12 @@ class EpisodeGenerator:
         return EpisodeText("abstain", [self.session_with_facts([f])], prompt, None, None, [f], None)
 
     def control(self) -> EpisodeText:
-        f_in, f_out = self.make_fact(), self.make_fact()
+        f_in = self.make_fact()
+        if self.rng.random() < self.same_relation_control_prob:
+            rel = next(r for r in RELATIONS if r["id"] == f_in.relation_id)
+            f_out = self.make_fact(relation=rel)
+        else:
+            f_out = self.make_fact()
         return EpisodeText(
             "control", [self.session_with_facts([f_in])],
             f_out.query_prompt(self.rng, self.paraphrase_prob), None, f_out.answer, [f_in], f_out,

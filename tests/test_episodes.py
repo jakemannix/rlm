@@ -102,3 +102,25 @@ def test_tokenize_episode_roundtrip_guard_fires():
     gen = EpisodeGenerator(seed=5)
     with pytest.raises(ValueError, match="round-trip"):
         tokenize_episode(gen.recall(), LossyTok(), BOS)
+
+
+def test_multifact_k_range_is_respected():
+    gen = EpisodeGenerator(seed=9, multifact_k=(8, 8))
+    ep = gen.multifact()
+    assert len(ep.facts) == 8
+
+
+def test_same_relation_hard_negative_controls():
+    gen = EpisodeGenerator(seed=11, same_relation_control_prob=1.0)
+    for _ in range(10):
+        ep = gen.control()
+        f_in, f_out = ep.facts[0], ep.queried_fact
+        assert f_in.relation_id == f_out.relation_id
+        assert f_in.entity != f_out.entity and f_in.answer != f_out.answer
+
+
+def test_tokenized_episode_carries_relation_label():
+    gen = EpisodeGenerator(seed=12)
+    ep = gen.recall()
+    te = tokenize_episode(ep, CharTok(), BOS)
+    assert te.relation_id == ep.queried_fact.relation_id

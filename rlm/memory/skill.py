@@ -40,6 +40,13 @@ class SkillConfig:
     encoder_layers: int = 1
     encoder_hidden: int = 1024
     tie_kq: bool = False
+    # Key whitening (ZCA fitted on the cached addressing population, see
+    # MemorySkill.set_whitening): equalises the key-input spectrum so the small
+    # entity-discriminative components carry addressing instead of the dominant
+    # shared template/position directions.  The capacity lever from the design
+    # review (docs/design_review_capacity.md §2): raw template-clustered keys
+    # collapse by m≈16–32 regardless of d_k or head count; whitened keys hold 128.
+    whiten: bool = False
     read_gate_bias_init: float = -2.0  # g₀ ≈ 0.12: small but alive
     # Multi-head addressing (design doc §1/Q1).  n_heads>1 + shared_encoder=False ⇒
     # H *independent* encoders (d_model→d_k/H) feeding H per-head-normed stores: the
@@ -118,11 +125,29 @@ class MemorySkill(nn.Module):
         # interference on an unrelated query) vs a strong matched recall — the
         # branch table's "per-token read gate features" fix for A2 (raising
         # lambda_kl alone over-suppresses and breaks A1's wrong-fact control).
+        # Whitening buffers (identity until set_whitening): applied to encoder
+        # inputs only — the read gate still sees the raw post-norm hidden.
+        self.register_buffer("whiten_mean", torch.zeros(cfg.d_model))
+        self.register_buffer("whiten_T", torch.eye(cfg.d_model))
+
         self.read_gate = nn.Linear(2 * cfg.d_model + 1, 1)
         nn.init.zeros_(self.read_gate.weight)
         nn.init.constant_(self.read_gate.bias, cfg.read_gate_bias_init)
 
     # ------------------------------------------------------------------
+    def set_whitening(self, mean: Tensor, transform: Tensor) -> None:
+        """Install a fitted ZCA (see :func:`fit_zca`); persists via state_dict."""
+        if mean.shape != (self.cfg.d_model,) or transform.shape != (self.cfg.d_model, self.cfg.d_model):
+            raise ValueError(f"whitening shapes {mean.shape}/{transform.shape} != d_model {self.cfg.d_model}")
+        self.whiten_mean.copy_(mean.to(self.whiten_mean))
+        self.whiten_T.copy_(transform.to(self.whiten_T))
+        self.cfg.whiten = True
+
+    def whiten(self, hn: Tensor) -> Tensor:
+        if not self.cfg.whiten:
+            return hn
+        return (hn - self.whiten_mean) @ self.whiten_T.T
+
     def init_state(self, batch_size: int, device=None) -> StoreState:
         return self.store.init_state(batch_size, device=device)
 
@@ -134,7 +159,7 @@ class MemorySkill(nn.Module):
         write_mask: Tensor | None = None,  # [B, T]
         stats: dict | None = None,  # optional out-dict: write-side gate means
     ) -> StoreState:
-        keys = self.key_enc(hn)
+        keys = self.key_enc(self.whiten(hn))
         return self.store.write(keys, e_next, state, write_mask=write_mask, stats=stats)
 
     def read_delta(
@@ -147,7 +172,7 @@ class MemorySkill(nn.Module):
         head_input = hn + delta ;  delta = g · out_proj(M q).
         Empty store ⇒ read = 0 ⇒ delta ≡ 0 (exact no-op).
         """
-        q = self.query_enc(hn)
+        q = self.query_enc(self.whiten(hn))
         read = self.store.read(q, state)  # [B, T, d_model]
         # ‖read‖ via norm() (overflow-safe — pow(2) overflows fp32 on the large
         # reads an untrained store produces on long multisession ingests, and the
@@ -176,3 +201,25 @@ class MemorySkill(nn.Module):
         if device is not None:
             skill.to(device)
         return skill
+
+
+def fit_zca(x: Tensor, eps_frac: float = 1e-3) -> tuple[Tensor, Tensor]:
+    """Fit a shrinkage-regularised ZCA whitening transform on rows of ``x``.
+
+    Returns ``(mean, T)`` with ``T = U diag((S + ε)^{-1/2}) Uᵀ`` for the
+    eigendecomposition of the (shrunk) covariance, ε = eps_frac · mean(S).
+    Apply as ``(x − mean) @ T.T``.  ``eps_frac`` trades how aggressively the
+    small (entity-carrying) directions are amplified against amplifying noise —
+    sweep {1e-2, 1e-3, 1e-4} if queries are noisy (paraphrase regime).
+    """
+    if x.dim() != 2 or x.shape[0] < 2:
+        raise ValueError(f"fit_zca expects [N>=2, d], got {tuple(x.shape)}")
+    x = x.to(torch.float32)
+    mean = x.mean(dim=0)
+    xc = x - mean
+    cov = xc.T @ xc / (x.shape[0] - 1)
+    S, U = torch.linalg.eigh(cov)
+    S = S.clamp(min=0.0)
+    eps = eps_frac * S.mean()
+    T = U @ torch.diag((S + eps).rsqrt()) @ U.T
+    return mean, T

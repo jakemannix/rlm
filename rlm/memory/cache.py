@@ -40,6 +40,7 @@ from rlm.memory.episodes import EpisodeGenerator, EpisodeText
 @dataclass
 class TokenizedEpisode:
     episode_type: str
+    relation_id: str | None
     sessions: list[dict]  # {"ids": Long[T], "fact_mask": Float[T]}
     query_ids: Tensor  # Long[Tq]  (prompt + answer + probe-answer-free, see below)
     ce_pos: Tensor  # Long[P]
@@ -99,6 +100,7 @@ def tokenize_episode(ep: EpisodeText, tok, bos_id: int | None) -> TokenizedEpiso
 
     return TokenizedEpisode(
         ep.episode_type,
+        ep.queried_fact.relation_id if ep.queried_fact is not None else None,
         sessions,
         query_ids,
         ce_pos,
@@ -182,6 +184,7 @@ def build_cache(
     out_dir: str,
     n_episodes: int = 20_000,
     mix: dict[str, float] | None = None,
+    generator: EpisodeGenerator | None = None,
     seed: int = 0,
     paraphrase_prob: float = 0.0,
     batch_size: int = 16,
@@ -236,7 +239,7 @@ def build_cache(
         out / "head.pt",
     )
 
-    gen = EpisodeGenerator(seed=seed, paraphrase_prob=paraphrase_prob)
+    gen = generator if generator is not None else EpisodeGenerator(seed=seed, paraphrase_prob=paraphrase_prob)
     bos = tok.bos_token_id
     counts: dict[str, int] = {}
     shard: list[dict] = []
@@ -275,6 +278,7 @@ def build_cache(
             shard.append(
                 {
                     "type": te.episode_type,
+                    "relation": te.relation_id,
                     "sessions": sessions,
                     "query": {
                         "hn": qh.to(dtype),

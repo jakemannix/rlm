@@ -34,6 +34,10 @@ def main() -> None:
     ap.add_argument(
         "--mix", default=None, help='JSON, e.g. \'{"recall":0.6,"abstain":0.2,"control":0.2}\''
     )
+    ap.add_argument("--multifact-k", default="2,6",
+                    help="comma lo,hi for #facts per multifact episode — capacity pressure (design review C2)")
+    ap.add_argument("--same-relation-control-prob", type=float, default=0.0,
+                    help="fraction of control episodes that are same-relation hard negatives (C2)")
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--shard-size", type=int, default=1_000)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -53,12 +57,22 @@ def main() -> None:
         .to(args.device)
         .eval()
     )
+    from rlm.memory.episodes import EpisodeGenerator
+
+    lo, hi = (int(v) for v in args.multifact_k.split(","))
+    gen = EpisodeGenerator(
+        seed=args.seed,
+        paraphrase_prob=args.paraphrase_prob,
+        multifact_k=(lo, hi),
+        same_relation_control_prob=args.same_relation_control_prob,
+    )
     build_cache(
         model,
         tok,
         args.out,
         n_episodes=args.episodes,
         mix=json.loads(args.mix) if args.mix else None,
+        generator=gen,
         seed=args.seed,
         paraphrase_prob=args.paraphrase_prob,
         batch_size=args.batch_size,
