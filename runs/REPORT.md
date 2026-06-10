@@ -64,3 +64,17 @@ frozen base. Remaining: A2 specificity (λ_KL sweep), A3 capacity, A1b paraphras
 - Step 0 (2026-06-10): post-final-norm injection of the tied-embedding gold direction steers
   gemma-3-1b cleanly; random-direction control stays flat through λ≤1.0, degrades by λ≥2.
   Whole-approach de-risked at the injection splice. → proceed to Step 1.
+
+## Capacity plan (Fable design review) — C0 PASS, C1/C2 running (2026-06-10)
+Fable adjudicated the handoff (`docs/design_review_capacity.md`): **A1+A4 IS the milestone**;
+the multi-head no-op proof was wrong (delta-rule heads *do* ensemble) but multi-head is inert
+for our clustered geometry; **the lever is ZCA key whitening**. Patch integrated (whitening in
+MemorySkill, `diagnose_keys.py`, data-pressure generator knobs) alongside the multi-head build;
+50 CPU tests green.
+- **C0 (`diagnose_keys` on the real gemma-3-1b cache) — diagnosis PROVEN.** Addressing hiddens:
+  **participation ratio = 10** (of 1152), r50=4, top-1 dir = 25% of var, **mean |cos| = 0.77**.
+  Predicted A3 top5 (N=4..128): raw 0.67/0.42/0.33/0.25/0.11/0.04 (matches observed collapse);
+  **whitened 1.00/1.00/0.94/0.95/0.99/0.98** (holds to 128); oracle 0.92–0.98 (erosion ruled out).
+- **C1/C2 running** (`whiten_sweep.sh`, detached, keepalive defeats idle-reclaim): base vs
+  `--whiten` A/B on the cache, then data-pressure cache + whiten + 2-layer encoder. C1 gate:
+  A3 knee ≥ 32 clean facts (pre-registered from C0's whitened column).
