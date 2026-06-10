@@ -78,3 +78,9 @@ MemorySkill, `diagnose_keys.py`, data-pressure generator knobs) alongside the mu
 - **C1/C2 running** (`whiten_sweep.sh`, detached, keepalive defeats idle-reclaim): base vs
   `--whiten` A/B on the cache, then data-pressure cache + whiten + 2-layer encoder. C1 gate:
   A3 knee ≥ 32 clean facts (pre-registered from C0's whitened column).
+
+### C1 result — whitening fixes key geometry but reveals a SECOND bottleneck (2026-06-10)
+C1 base vs `--whiten` (A3 top5 vs N): base 1/1/1/0.50/0.38/0.19/0.12/0.02; whiten 1/1/1/**0.88**/0.44/0.25/0.09/0.03 (n=1..128). Whitening helped at n=8 but did NOT hit the ≥32 gate, and underperformed C0's clean-simulator prediction (whitened predicted 0.94–0.98 to 128).
+- **Why:** `diagnose_keys --skill skill_whiten` shows the TRAINED whitened keys are now *well-spread* — **participation ratio 10→46, mean |cos| 0.77→0.10**. So whitening + training **solved bottleneck #1 (key collision)**.
+- **But A3 still collapses → bottleneck #2:** the A3 multifact eval streams N facts through ONE session with filler, and the lr/forget **gate selectivity over long sessions was never trained** (multifact capped at k≤6 — "the data never asked"). C0's simulator did direct writes (no filler/gates/streaming) so it modeled only geometry and over-predicted.
+- **C2 (`pressure_whiten`: multifact k≤32 + same-relation hard negatives + 2-layer encoder + whiten) targets exactly bottleneck #2** — running now. If A3 still stalls after C2, the residual is the in-session-write vs standalone-query context mismatch.
