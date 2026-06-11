@@ -48,6 +48,12 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         help='"auto" = float32 on cpu, bfloat16 on cuda (T4 needs float16 explicitly)',
     )
     parser.add_argument(
+        "--use-surprise",
+        action="store_true",
+        help="add the policy-NLL surprise gate (the selector that matters on "
+        "clean expert traces, where failure heuristics rarely fire)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="skip LoRA training + NLL evals (no torch)"
     )
 

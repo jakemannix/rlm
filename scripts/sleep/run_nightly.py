@@ -67,6 +67,7 @@ def main() -> None:
         torch_dtype=resolve_torch_dtype(args.torch_dtype, args.device),
         episodes_per_day=args.episodes_per_day,
     )
+    config.gate.use_surprise = args.use_surprise
     judge_lm = build_judge(args, config.judge)
     kwargs = {"train_fn": fake_train_fn, "eval_fn": fake_eval_fn} if args.dry_run else {}
 
