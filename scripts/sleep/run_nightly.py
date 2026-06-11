@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from rlm.sleep.config import SleepConfig
+from rlm.sleep.local_judge import resolve_torch_dtype
 from rlm.sleep.loop import run_night
 from rlm.sleep.traces import partition_days, split_episodes
 
@@ -54,9 +55,10 @@ def main() -> None:
     config = SleepConfig(
         policy_model=args.policy_model,
         device=args.device,
+        torch_dtype=resolve_torch_dtype(args.torch_dtype, args.device),
         episodes_per_day=args.episodes_per_day,
     )
-    judge_lm = build_judge(args)
+    judge_lm = build_judge(args, config.judge)
     kwargs = {"train_fn": fake_train_fn, "eval_fn": fake_eval_fn} if args.dry_run else {}
 
     for day in range(args.days):

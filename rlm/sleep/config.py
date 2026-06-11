@@ -42,6 +42,11 @@ class JudgeConfig:
     n_samples: int = 1
     # Majority "learn" verdicts required across samples to keep an episode.
     min_confidence: float = 0.5
+    # Generation knobs for a local self-judge (LocalHFJudge): sampling
+    # diversity feeds the self-consistency vote; reflection gets a longer
+    # leash than ordinary policy decoding.
+    temperature: float = 0.7
+    max_new_tokens: int = 768
     # Run the cheap verification pass over each distilled example
     # (generation-verification gap: only verified examples earn a gradient).
     verify_examples: bool = True
