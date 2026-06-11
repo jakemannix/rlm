@@ -15,7 +15,7 @@ from pathlib import Path
 from rlm.clients.base_lm import BaseLM
 from rlm.sleep.config import SleepConfig
 from rlm.sleep.dataset import assert_no_leakage, collect_examples, with_replay, write_jsonl
-from rlm.sleep.gate import select_for_reflection
+from rlm.sleep.gate import SurpriseGate, select_for_reflection
 from rlm.sleep.judge import ReflectionJudge
 from rlm.sleep.types import DayResult, Episode, EvalReport, TrainingExample
 
@@ -69,6 +69,27 @@ def default_eval_fn(
     return report
 
 
+def build_surprise_gate(config: SleepConfig, judge_lm: BaseLM | None = None) -> SurpriseGate:
+    """Construct the NLL surprise gate, reusing a local judge's model if present.
+
+    A :class:`~rlm.sleep.local_judge.LocalHFJudge` already holds the frozen
+    policy model in memory; gating with the same instance costs nothing extra.
+    Otherwise the policy is loaded fresh.
+    """
+    model = getattr(judge_lm, "model", None)
+    tokenizer = getattr(judge_lm, "tokenizer", None)
+    if model is None or tokenizer is None:
+        from rlm.sleep.lora import load_policy
+
+        model, tokenizer = load_policy(
+            config.policy_model, device=config.device, torch_dtype=config.torch_dtype
+        )
+        model.eval()
+    return SurpriseGate(
+        model, tokenizer, device=config.device, max_tokens=config.gate.surprise_max_tokens
+    )
+
+
 def run_night(
     day_index: int,
     day_episodes: list[Episode],
@@ -79,13 +100,16 @@ def run_night(
     out_dir: str | Path,
     train_fn: TrainFn = default_train_fn,
     eval_fn: EvalFn = default_eval_fn,
+    surprise_gate: SurpriseGate | None = None,
 ) -> DayResult:
     """Run one full nightly cycle and persist every artifact under ``out_dir``."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Stage 1 — cheap gate over the day's episodes.
-    decisions = select_for_reflection(day_episodes, config.gate)
+    if surprise_gate is None and config.gate.use_surprise:
+        surprise_gate = build_surprise_gate(config, judge_lm)
+    decisions = select_for_reflection(day_episodes, config.gate, surprise_gate=surprise_gate)
     selected_ids = {d.episode_id for d in decisions if d.selected}
     selected = [ep for ep in day_episodes if ep.episode_id in selected_ids]
     (out_dir / "gate_decisions.json").write_text(

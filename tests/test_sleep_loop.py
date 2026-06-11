@@ -104,6 +104,50 @@ def test_run_night_quiet_day_trains_nothing(tmp_path):
     assert result.base_report is None
 
 
+class FakeSurpriseGate:
+    """Stands in for the NLL gate: 'surprising' iff the episode id ends in 0."""
+
+    def score(self, episode) -> float:
+        return 1.0 if episode.episode_id.endswith("0") else 0.0
+
+
+def test_run_night_uses_injected_surprise_gate(tmp_path):
+    day0, day1, test = make_splits()
+    run_night(
+        day_index=0,
+        day_episodes=day0,
+        next_day_episodes=day1,
+        test_episodes=test,
+        config=SleepConfig(),
+        judge_lm=judge_lm(),
+        out_dir=tmp_path / "day_0",
+        train_fn=fake_train_fn,
+        eval_fn=fake_eval_fn,
+        surprise_gate=FakeSurpriseGate(),
+    )
+    decisions = json.loads((tmp_path / "day_0" / "gate_decisions.json").read_text())
+    # The fake gate's signal is recorded for every episode and averaged into
+    # the final score (so a maximally surprising episode scores >= 0.5).
+    assert all("surprise" in d["signals"] for d in decisions)
+    for d in decisions:
+        expected = 1.0 if d["episode_id"].endswith("0") else 0.0
+        assert d["signals"]["surprise"] == expected
+        if expected == 1.0:
+            assert d["score"] >= 0.5
+
+
+def test_build_surprise_gate_reuses_local_judge_model():
+    from rlm.sleep.loop import build_surprise_gate
+
+    class JudgeWithModel:
+        model = object()
+        tokenizer = object()
+
+    gate = build_surprise_gate(SleepConfig(), JudgeWithModel())
+    assert gate.model is JudgeWithModel.model
+    assert gate.tokenizer is JudgeWithModel.tokenizer
+
+
 def test_expand_grid():
     grid = {"adapter.lr": [1e-4, 2e-4], "adapter.rank": [8, 16]}
     points = expand_grid(grid)
