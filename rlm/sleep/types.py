@@ -103,6 +103,9 @@ class JudgeOutput:
     lesson: str
     examples: list[TrainingExample] = field(default_factory=list)
     raw_responses: list[str] = field(default_factory=list)
+    # Reflection samples whose output contained no parseable JSON (each
+    # counts as a skip vote; tracked so judge quality is observable).
+    n_parse_failures: int = 0
 
 
 @dataclass

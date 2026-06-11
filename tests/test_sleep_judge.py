@@ -82,3 +82,42 @@ def test_low_confidence_learn_is_demoted():
     judge = ReflectionJudge(lm, JudgeConfig(n_samples=1, min_confidence=0.5))
     out = judge.reflect(episode())
     assert out.verdict == "skip"
+
+
+def test_unparseable_sample_counts_as_skip_vote():
+    # 1 learn + 2 garbage samples: learn loses the majority -> skip.
+    lm = MockLM(responses=[LEARN_RESPONSE, "I think we should learn!", "{broken json"])
+    judge = ReflectionJudge(lm, JudgeConfig(n_samples=3, verify_examples=False))
+    out = judge.reflect(episode())
+    assert out.verdict == "skip"
+    assert out.n_parse_failures == 2
+
+
+def test_all_samples_unparseable_yields_skip_not_crash():
+    lm = MockLM(responses=["nope", "still nope"])
+    judge = ReflectionJudge(lm, JudgeConfig(n_samples=2))
+    out = judge.reflect(episode())
+    assert out.verdict == "skip"
+    assert out.n_parse_failures == 2
+    assert out.confidence == 1.0
+
+
+def test_malformed_examples_are_dropped_not_fatal():
+    response = json.dumps(
+        {
+            "verdict": "learn",
+            "confidence": 0.9,
+            "lesson": "Check arguments.",
+            "examples": [
+                {"prompt": "Good prompt.", "response": "Good response."},
+                {"prompt": "Missing response key."},
+                "not even a dict",
+            ],
+        }
+    )
+    lm = MockLM(responses=[response])
+    judge = ReflectionJudge(lm, JudgeConfig(n_samples=1, verify_examples=False))
+    out = judge.reflect(episode())
+    assert out.verdict == "learn"
+    assert len(out.examples) == 1
+    assert out.examples[0].prompt == "Good prompt."

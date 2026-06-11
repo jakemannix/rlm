@@ -85,16 +85,25 @@ class ReflectionJudge:
             transcript=episode.transcript(max_chars=cfg.max_transcript_chars),
         )
         raw_responses = [self.lm.completion(prompt) for _ in range(cfg.n_samples)]
-        parsed = [extract_json(r) for r in raw_responses]
+        # A sample that fails to parse counts as a (silent) skip vote: a judge
+        # that can't even produce valid JSON shouldn't get a model update.
+        parsed = []
+        n_parse_failures = 0
+        for r in raw_responses:
+            try:
+                parsed.append(extract_json(r))
+            except (ValueError, json.JSONDecodeError):
+                n_parse_failures += 1
 
         learn_votes = [p for p in parsed if p.get("verdict") == "learn"]
-        if len(learn_votes) * 2 <= len(parsed):
+        if len(learn_votes) * 2 <= len(raw_responses):
             return JudgeOutput(
                 episode_id=episode.episode_id,
                 verdict="skip",
-                confidence=1.0 - len(learn_votes) / len(parsed),
+                confidence=1.0 - len(learn_votes) / len(raw_responses),
                 lesson="",
                 raw_responses=raw_responses,
+                n_parse_failures=n_parse_failures,
             )
 
         best = max(learn_votes, key=lambda p: float(p.get("confidence", 0.0)))
@@ -107,10 +116,13 @@ class ReflectionJudge:
                 confidence=confidence,
                 lesson=lesson,
                 raw_responses=raw_responses,
+                n_parse_failures=n_parse_failures,
             )
 
         examples = []
         for ex in list(best.get("examples", []))[: cfg.max_examples_per_episode]:
+            if not isinstance(ex, dict) or "prompt" not in ex or "response" not in ex:
+                continue  # malformed example from the judge; verdict still stands
             example = TrainingExample(
                 prompt=str(ex["prompt"]),
                 response=str(ex["response"]),
@@ -127,6 +139,7 @@ class ReflectionJudge:
             lesson=lesson,
             examples=examples,
             raw_responses=raw_responses,
+            n_parse_failures=n_parse_failures,
         )
 
     def verify(self, example: TrainingExample) -> bool:
