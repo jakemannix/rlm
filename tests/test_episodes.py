@@ -143,4 +143,7 @@ def test_answer_mask_targets_answer_tokens():
     assert chr(int(ids[first + 1])) == f.answer[0]
     # and that position is the prompt-final char (outside the answer span itself)
     assert answer_mask[first] == 0
-    assert torch.equal(fact_mask.bool() | (answer_mask == 0).bool(), torch.ones_like(fact_mask).bool()) or True
+    assert (
+        torch.equal(fact_mask.bool() | (answer_mask == 0).bool(), torch.ones_like(fact_mask).bool())
+        or True
+    )

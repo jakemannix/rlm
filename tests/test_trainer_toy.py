@@ -172,7 +172,9 @@ def test_multihead_skill_independent_and_shared_control():
     the single-encoder control. Both run write→read_delta with the unchanged d_v API."""
     from rlm.memory.skill import _MultiHeadEncoder
 
-    indep = MemorySkill(SkillConfig(d_model=32, d_k=64, n_heads=8, store=LinearStoreConfig(chunk_size=2)))
+    indep = MemorySkill(
+        SkillConfig(d_model=32, d_k=64, n_heads=8, store=LinearStoreConfig(chunk_size=2))
+    )
     assert isinstance(indep.key_enc, _MultiHeadEncoder) and len(indep.key_enc.heads) == 8
     st = indep.init_state(2)
     st = indep.write(torch.randn(2, 5, 32), torch.randn(2, 5, 32), st)
@@ -180,7 +182,13 @@ def test_multihead_skill_independent_and_shared_control():
     assert delta.shape == (2, 5, 32)
 
     shared = MemorySkill(
-        SkillConfig(d_model=32, d_k=64, n_heads=8, shared_encoder=True, store=LinearStoreConfig(chunk_size=2))
+        SkillConfig(
+            d_model=32,
+            d_k=64,
+            n_heads=8,
+            shared_encoder=True,
+            store=LinearStoreConfig(chunk_size=2),
+        )
     )
     assert not isinstance(shared.key_enc, _MultiHeadEncoder)
     st2 = shared.init_state(1)
@@ -191,7 +199,9 @@ def test_multihead_skill_independent_and_shared_control():
 
 def test_skill_match_gate_runs_and_is_optional():
     """use_match_gate wires M₂ into the read gate (same gate dim); default is unchanged."""
-    sk = MemorySkill(SkillConfig(d_model=32, d_k=64, use_match_gate=True, store=LinearStoreConfig(chunk_size=2)))
+    sk = MemorySkill(
+        SkillConfig(d_model=32, d_k=64, use_match_gate=True, store=LinearStoreConfig(chunk_size=2))
+    )
     assert sk.cfg.store.match_store
     st = sk.write(torch.randn(1, 5, 32), torch.randn(1, 5, 32), sk.init_state(1))
     delta, aux = sk.read_delta(torch.randn(1, 5, 32), st)

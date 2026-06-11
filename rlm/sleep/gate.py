@@ -78,7 +78,14 @@ class HeuristicGate:
 
 
 class SurpriseGate:
-    """Mean NLL of assistant tokens under the current policy model."""
+    """Raw mean NLL of the gold response under the current policy model.
+
+    Returns nats/token, *not* a squashed score: absolute NLL scales differ
+    wildly across datasets and model sizes (measured: an absolute /4.0
+    squash saturated at 1.0 on every AgentInstruct/os episode under a 0.5B
+    policy). ``select_for_reflection`` min-max normalizes within the day,
+    so "surprising" always means *relative to today's batch*.
+    """
 
     def __init__(self, model, tokenizer, device: str = "cuda", max_tokens: int = 512):
         self.model = model
@@ -92,7 +99,7 @@ class SurpriseGate:
         from rlm.sleep.evals import response_nll
 
         with torch.no_grad():
-            nll = response_nll(
+            return response_nll(
                 self.model,
                 self.tokenizer,
                 prompt_messages=episode.prompt_messages(),
@@ -100,8 +107,6 @@ class SurpriseGate:
                 device=self.device,
                 max_seq_len=self.max_tokens,
             )
-        # Squash to [0, 1]: NLL of ~4 nats/token is already very surprising.
-        return min(1.0, nll / 4.0)
 
 
 def select_for_reflection(
@@ -109,15 +114,30 @@ def select_for_reflection(
     config: GateConfig,
     surprise_gate: SurpriseGate | None = None,
 ) -> list[GateDecision]:
-    """Score every episode; select the top ``budget_fraction`` above ``min_score``."""
+    """Score every episode; select the top ``budget_fraction`` above ``min_score``.
+
+    When a surprise gate is provided, its raw NLLs are min-max normalized
+    *within the day* to [0, 1] (ties stay tied, ordering is preserved) and
+    averaged with the heuristic score.
+    """
     heuristic = HeuristicGate(config)
-    decisions = []
+    scored = []
     for ep in episodes:
         score, signals = heuristic.score(ep)
         if surprise_gate is not None:
-            surprise = surprise_gate.score(ep)
-            signals["surprise"] = surprise
-            score = (score + surprise) / 2.0
+            signals["surprise_nll"] = surprise_gate.score(ep)
+        scored.append((ep, score, signals))
+
+    if surprise_gate is not None and scored:
+        nlls = [signals["surprise_nll"] for _, _, signals in scored]
+        lo, hi = min(nlls), max(nlls)
+        for _, _, signals in scored:
+            signals["surprise"] = (signals["surprise_nll"] - lo) / (hi - lo) if hi > lo else 0.5
+
+    decisions = []
+    for ep, score, signals in scored:
+        if surprise_gate is not None:
+            score = (score + signals["surprise"]) / 2.0
         decisions.append(
             GateDecision(episode_id=ep.episode_id, score=score, selected=False, signals=signals)
         )

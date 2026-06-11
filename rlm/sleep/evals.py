@@ -29,16 +29,25 @@ def response_nll(
     device: str,
     max_seq_len: int = 1024,
 ) -> float:
-    """Mean per-token NLL (nats) of ``response`` given the chat prompt."""
+    """Mean per-token NLL (nats) of ``response`` given the chat prompt.
+
+    When prompt + response exceed ``max_seq_len``, the *prompt* is
+    left-truncated so the response is always what gets scored — otherwise
+    long-prompt episodes (e.g. AgentInstruct os instructions) would
+    silently measure leftover prompt tokens instead.
+    """
     import torch
 
     prompt_text = tokenizer.apply_chat_template(
         prompt_messages, tokenize=False, add_generation_prompt=True
     )
     prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
-    full_ids = tokenizer(prompt_text + response, add_special_tokens=False)["input_ids"]
-    full_ids = full_ids[:max_seq_len]
-    n_prompt = min(len(prompt_ids), len(full_ids) - 1)
+    response_ids = tokenizer(response, add_special_tokens=False)["input_ids"]
+    # Keep the full response (capped at half the window so some prompt
+    # context always remains), then fill the rest with the prompt's tail.
+    n_response = min(len(response_ids), max(1, max_seq_len // 2))
+    n_prompt = min(len(prompt_ids), max_seq_len - n_response)
+    full_ids = prompt_ids[len(prompt_ids) - n_prompt :] + response_ids[:n_response]
 
     input_ids = torch.tensor([full_ids], device=device)
     labels = torch.full_like(input_ids, -100)
