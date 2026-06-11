@@ -1,7 +1,7 @@
 """Tests for the cheap gate: scoring, budget, and signal quality."""
 
 from rlm.sleep.config import GateConfig
-from rlm.sleep.gate import HeuristicGate, select_for_reflection
+from rlm.sleep.gate import HeuristicGate, heuristic_signals, select_for_reflection
 from rlm.sleep.traces import synthetic_traces
 from rlm.sleep.types import Episode, Step
 
@@ -83,3 +83,39 @@ def test_min_score_floor():
     ]
     decisions = select_for_reflection(episodes, GateConfig(budget_fraction=0.5, min_score=0.15))
     assert sum(1 for d in decisions if d.selected) == 0
+
+
+def test_errors_in_user_observation_turns_are_counted():
+    """Chat-style agent datasets (AgentInstruct) deliver env feedback as user
+    turns; errors there must fire the gate just like tool-step errors."""
+    ep = Episode(
+        episode_id="obs-1",
+        source="test",
+        task="list files",
+        steps=[
+            Step("user", "TASK: list files"),
+            Step("assistant", "Act: bash ls /nope"),
+            Step("user", "bash: ls: cannot access '/nope': Error: no such file"),
+            Step("assistant", "Act: bash ls /tmp"),
+            Step("user", "ok"),
+            Step("assistant", "Done."),
+        ],
+    )
+    signals = heuristic_signals(ep)
+    assert signals["error"] > 0
+
+
+def test_task_instruction_mentioning_errors_does_not_fire():
+    """The opening user turn is the instruction, not feedback — the word
+    'error' there must not count."""
+    ep = Episode(
+        episode_id="obs-2",
+        source="test",
+        task="x",
+        steps=[
+            Step("user", "TASK: if you see an error or timeout, report it as failed"),
+            Step("assistant", "Done, no issues."),
+        ],
+    )
+    signals = heuristic_signals(ep)
+    assert signals["error"] == 0

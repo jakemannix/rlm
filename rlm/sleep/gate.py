@@ -26,10 +26,19 @@ ERROR_PATTERN = re.compile(r"\b(error|traceback|exception|failed|denied|timeout)
 
 def heuristic_signals(episode: Episode) -> dict[str, float]:
     """Raw per-episode features, each roughly in [0, 1]."""
-    tool_steps = [s for s in episode.steps if s.role == "tool"]
+    # Environment feedback is "tool" steps, plus user turns *after* the
+    # first: chat-style agent datasets (e.g. AgentInstruct's human/gpt
+    # alternation) deliver observations as user turns, and the opening
+    # user turn is the task instruction, not feedback.
+    first_user = next((i for i, s in enumerate(episode.steps) if s.role == "user"), -1)
+    observation_steps = [
+        s
+        for i, s in enumerate(episode.steps)
+        if s.role == "tool" or (s.role == "user" and i > first_user)
+    ]
     assistant_steps = [s for s in episode.steps if s.role == "assistant"]
 
-    n_errors = sum(1 for s in tool_steps if ERROR_PATTERN.search(s.content))
+    n_errors = sum(1 for s in observation_steps if ERROR_PATTERN.search(s.content))
     error_signal = min(1.0, n_errors / 2.0)
 
     n_retries = sum(

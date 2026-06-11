@@ -67,11 +67,20 @@ def load_hf_traces(
     """Load and normalize agentic traces from the HuggingFace Hub.
 
     Requires the ``sleep`` extra (``datasets``).  AgentInstruct exposes its
-    domains (os, db, alfworld, webshop, kg, mind2web) as configs.
+    domains (os, db, alfworld, webshop, kg, mind2web) as *splits* of the
+    default config, so ``config_name`` falls back to being used as the
+    split name when the dataset has no such config — domain sizes range
+    from 122 (mind2web) to 538 (db) episodes.
     """
     from datasets import load_dataset
 
-    ds = load_dataset(dataset_name, config_name, split=split)
+    try:
+        ds = load_dataset(dataset_name, config_name, split=split)
+    except ValueError as err:
+        if config_name is None or "BuilderConfig" not in str(err):
+            raise
+        # Datasets like AgentInstruct expose domains as splits, not configs.
+        ds = load_dataset(dataset_name, split=config_name)
     episodes = []
     for i, record in enumerate(ds):
         if limit is not None and i >= limit:
