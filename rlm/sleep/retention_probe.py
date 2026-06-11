@@ -35,8 +35,7 @@ RETENTION_PROBE_V1: list[str] = [
     "hundred eighty degrees.",
     "A prime number is a whole number greater than one whose only divisors are "
     "one and itself; the smallest primes are two, three, five, and seven.",
-    "Multiplying any number by zero gives zero, and adding zero to any number "
-    "leaves it unchanged.",
+    "Multiplying any number by zero gives zero, and adding zero to any number leaves it unchanged.",
     "The area of a circle equals pi times the square of its radius, where pi "
     "is approximately 3.14159.",
     "Compound interest grows a balance exponentially: money earning ten "
@@ -84,25 +83,19 @@ RETENTION_PROBE_V1: list[str] = [
     "fifteenth century, made books dramatically cheaper to produce.",
     "Mount Everest, on the border between Nepal and China, is the tallest "
     "mountain above sea level on Earth.",
-    "The Sahara is the largest hot desert in the world, stretching across "
-    "much of northern Africa.",
-    "Ancient Rome's republic gave way to an empire under Augustus, the first "
-    "Roman emperor.",
-    "The Pacific is the largest and deepest ocean, covering about a third of "
-    "the Earth's surface.",
+    "The Sahara is the largest hot desert in the world, stretching across much of northern Africa.",
+    "Ancient Rome's republic gave way to an empire under Augustus, the first Roman emperor.",
+    "The Pacific is the largest and deepest ocean, covering about a third of the Earth's surface.",
     # -- language & everyday reasoning -----------------------------------------
     "A synonym is a word with nearly the same meaning as another, while an "
     "antonym means the opposite.",
     "In English, the past tense of go is went, an irregular form that does "
     "not follow the usual -ed pattern.",
-    "If a recipe serves four and you need to serve eight, you double every "
-    "ingredient.",
+    "If a recipe serves four and you need to serve eight, you double every ingredient.",
     "2.5 hours is 150 minutes, because each hour contains 60 minutes.",
-    "When ice melts into water its mass stays the same, even though its "
-    "volume decreases slightly.",
+    "When ice melts into water its mass stays the same, even though its volume decreases slightly.",
     "A dozen means twelve, so three dozen eggs is thirty-six eggs.",
-    "If a train departs at 9:40 and the ride lasts 45 minutes, it arrives at "
-    "10:25.",
+    "If a train departs at 9:40 and the ride lasts 45 minutes, it arrives at 10:25.",
     "Reading a thermometer in the shade gives a more accurate air temperature "
     "than reading it in direct sunlight.",
     "To alphabetize the words banana, apple, and cherry, the correct order is "
