@@ -15,20 +15,10 @@ Lower is better for all three; the report records deltas vs. the base.
 
 from __future__ import annotations
 
+from rlm.sleep.retention_probe import RETENTION_PROBE_V1
 from rlm.sleep.types import Episode, EvalReport
 
-RETENTION_PROBE: list[str] = [
-    "The Earth orbits the Sun once every 365.25 days, which is why leap years "
-    "exist: an extra day every four years keeps the calendar aligned.",
-    "In Python, dictionaries preserve insertion order since version 3.7, and "
-    "lookups by key take constant time on average.",
-    "Photosynthesis converts carbon dioxide and water into glucose and oxygen, "
-    "using energy captured from sunlight by chlorophyll.",
-    "A binary search over a sorted array of one million elements needs at most "
-    "twenty comparisons, because two to the twentieth exceeds one million.",
-    "The freezing point of water at standard pressure is zero degrees Celsius, "
-    "or thirty-two degrees Fahrenheit.",
-]
+RETENTION_PROBE: list[str] = RETENTION_PROBE_V1
 
 
 def response_nll(
