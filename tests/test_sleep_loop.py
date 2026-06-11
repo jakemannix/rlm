@@ -104,6 +104,75 @@ def test_run_night_quiet_day_trains_nothing(tmp_path):
     assert result.base_report is None
 
 
+def test_run_night_includes_extra_examples(tmp_path):
+    from rlm.sleep.types import TrainingExample
+
+    day0, day1, test = make_splits()
+    extras = [
+        TrainingExample(
+            prompt=f"Prior night lesson {i}",
+            response="Apply it.",
+            lesson="old",
+            source_episode_id=f"prior-{i}",
+            verified=True,
+        )
+        for i in range(5)
+    ]
+    captured = {}
+
+    def capturing_train_fn(examples, config, out_dir):
+        captured["examples"] = examples
+        return fake_train_fn(examples, config, out_dir)
+
+    result = run_night(
+        day_index=1,
+        day_episodes=day0,
+        next_day_episodes=day1,
+        test_episodes=test,
+        config=SleepConfig(),
+        judge_lm=judge_lm(),
+        out_dir=tmp_path / "day_1",
+        train_fn=capturing_train_fn,
+        eval_fn=fake_eval_fn,
+        extra_examples=extras,
+    )
+    trained_prompts = {ex.prompt for ex in captured["examples"]}
+    assert all(e.prompt in trained_prompts for e in extras)
+    assert result.n_examples == len(captured["examples"])
+    assert result.n_examples > len(extras)  # tonight's examples + replay too
+
+
+def test_run_night_quiet_day_ignores_extras(tmp_path):
+    """Extras alone don't justify an update: no new lessons -> no adapter."""
+    from rlm.sleep.types import TrainingExample
+
+    day0, day1, test = make_splits()
+    skip = json.dumps({"verdict": "skip", "confidence": 0.9, "lesson": "", "examples": []})
+    extras = [
+        TrainingExample(
+            prompt="Old lesson",
+            response="x",
+            lesson="old",
+            source_episode_id="prior-0",
+            verified=True,
+        )
+    ]
+    result = run_night(
+        day_index=1,
+        day_episodes=day0,
+        next_day_episodes=day1,
+        test_episodes=test,
+        config=SleepConfig(),
+        judge_lm=MockLM(response_fn=lambda _: skip),
+        out_dir=tmp_path / "day_1",
+        train_fn=fake_train_fn,
+        eval_fn=fake_eval_fn,
+        extra_examples=extras,
+    )
+    assert result.adapter_dir is None
+    assert result.n_examples == 0
+
+
 class FakeSurpriseGate:
     """Stands in for the NLL gate: 'surprising' iff the episode id ends in 0."""
 

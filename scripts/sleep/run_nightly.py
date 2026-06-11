@@ -14,10 +14,13 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from rlm.sleep.config import SleepConfig
+from rlm.sleep.dataset import collect_examples
+from rlm.sleep.judge import output_from_dict
 from rlm.sleep.local_judge import resolve_torch_dtype
 from rlm.sleep.loop import run_night
 from rlm.sleep.traces import partition_days, split_episodes
@@ -39,6 +42,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
     parser.add_argument("--days", type=int, default=1, help="number of nightly cycles to run")
+    parser.add_argument(
+        "--cumulative",
+        action="store_true",
+        help="re-distill baseline: night N trains from base on the union of "
+        "all nights' verified examples so far (vs. independent nightly adapters)",
+    )
     parser.add_argument("--out", default="runs/sleep/nightly")
     args = parser.parse_args()
 
@@ -61,7 +70,9 @@ def main() -> None:
     judge_lm = build_judge(args, config.judge)
     kwargs = {"train_fn": fake_train_fn, "eval_fn": fake_eval_fn} if args.dry_run else {}
 
+    accumulated: list = []
     for day in range(args.days):
+        day_dir = Path(args.out) / f"day_{day:03d}"
         result = run_night(
             day_index=day,
             day_episodes=days[day],
@@ -69,10 +80,17 @@ def main() -> None:
             test_episodes=test,
             config=config,
             judge_lm=judge_lm,
-            out_dir=Path(args.out) / f"day_{day:03d}",
+            out_dir=day_dir,
             judge_cache_path=Path(args.out) / "judge_cache.json",
+            extra_examples=list(accumulated) if args.cumulative else None,
             **kwargs,
         )
+        if args.cumulative:
+            # Tonight's *new* verified examples (pre-replay, pre-extras) come
+            # from the persisted judge outputs, never from sft_data.jsonl —
+            # the latter would double-count prior nights.
+            outputs = json.loads((day_dir / "judge_outputs.json").read_text())
+            accumulated.extend(collect_examples([output_from_dict(o) for o in outputs]))
         print(
             f"[day {day}] episodes={result.n_episodes} gated={result.n_selected} "
             f"learn={result.n_learn_verdicts} examples={result.n_examples}"

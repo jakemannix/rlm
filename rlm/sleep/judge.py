@@ -75,7 +75,8 @@ def extract_json(text: str) -> dict:
     return json.loads(match.group(0))
 
 
-def _output_from_dict(record: dict) -> JudgeOutput:
+def output_from_dict(record: dict) -> JudgeOutput:
+    """Rebuild a JudgeOutput from its asdict() form (cache & artifact files)."""
     examples = [TrainingExample(**ex) for ex in record.get("examples", [])]
     return JudgeOutput(**(record | {"examples": examples}))
 
@@ -122,7 +123,7 @@ class ReflectionJudge:
         key = self._cache_key(prompt)
         if key in self._cache:
             self.cache_hits += 1
-            return _output_from_dict(self._cache[key])
+            return output_from_dict(self._cache[key])
         output = self._reflect_uncached(episode, prompt)
         if self.cache_path is not None:
             self._cache[key] = asdict(output)

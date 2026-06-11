@@ -102,8 +102,15 @@ def run_night(
     eval_fn: EvalFn = default_eval_fn,
     surprise_gate: SurpriseGate | None = None,
     judge_cache_path: str | Path | None = None,
+    extra_examples: list[TrainingExample] | None = None,
 ) -> DayResult:
-    """Run one full nightly cycle and persist every artifact under ``out_dir``."""
+    """Run one full nightly cycle and persist every artifact under ``out_dir``.
+
+    ``extra_examples`` (e.g. prior nights' verified examples, for the
+    cumulative re-distill baseline) join tonight's batch before replay
+    mixing. A night that distills nothing new still trains nothing — the
+    extras alone don't justify an update.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -123,13 +130,15 @@ def run_night(
     (out_dir / "judge_outputs.json").write_text(json.dumps([asdict(o) for o in outputs], indent=2))
 
     # Stage 3 — verified examples + replay -> SFT set (with leakage guard).
-    examples = collect_examples(outputs)
+    night_examples = collect_examples(outputs)
+    examples = (list(extra_examples) if extra_examples else []) + night_examples
     assert_no_leakage(examples, next_day_episodes + test_episodes)
-    examples = with_replay(examples, config.adapter.replay_ratio, seed=config.adapter.seed)
+    if night_examples:
+        examples = with_replay(examples, config.adapter.replay_ratio, seed=config.adapter.seed)
     write_jsonl(examples, out_dir / "sft_data.jsonl", system_prompt=config.system_prompt)
 
     n_learn = sum(1 for o in outputs if o.verdict == "learn")
-    if not examples:
+    if not night_examples:
         result = DayResult(
             day_index=day_index,
             n_episodes=len(day_episodes),
