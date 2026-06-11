@@ -10,21 +10,27 @@
 
 ```
 day N episodes ──► GATE (cheap) ──► JUDGE (high TTC) ──► verified SFT + replay
-                   ~25% budget       reflect + distill         │
-                                     + verify pass             ▼
+                   ~25% budget       the SAME model,           │
+                                     more thinking budget      ▼
 day N+1 + test ◄── EVAL (NLL) ◄──── adapter ◄──────────── LoRA TRAIN
 ```
 
+The judge is the policy model itself by default — frozen base weights with
+a larger test-time-compute budget (self-consistency sampling, longer
+generations). No external teacher, no API key: the generation–verification
+gap *within one model* is the supervision (`learning_signal.md` §5).
+
 | Stage | Module | What it does |
 |---|---|---|
-| Traces | `rlm/sleep/traces.py` | HF agentic traces (default `THUDM/AgentInstruct`) normalized to `Episode`; deterministic hash splits; sequential "days" |
-| Gate | `rlm/sleep/gate.py` | Heuristic learnworthiness score (errors / retries / failure / length) + optional NLL `SurpriseGate`; top-`budget_fraction` above a floor |
-| Judge | `rlm/sleep/judge.py` | LLM-as-a-Judge reflection (any `BaseLM`): learn/skip verdict, lesson, distilled examples; self-consistency over `n_samples`; YES/NO verification pass per example |
+| Traces | `rlm/sleep/traces.py` | HF agentic traces (default `THUDM/AgentInstruct`; domains are *splits*: os/db/alfworld/webshop/kg/mind2web) normalized to `Episode`; deterministic hash splits; sequential "days" |
+| Gate | `rlm/sleep/gate.py` | Heuristic learnworthiness score (errors / retries / failure / length — errors scanned in tool steps *and* user observation turns) + optional NLL `SurpriseGate` (`--use-surprise`); top-`budget_fraction` above a floor |
+| Judge | `rlm/sleep/judge.py` | LLM-as-a-Judge reflection: learn/skip verdict, lesson, distilled examples; self-consistency over `n_samples`; YES/NO verification pass per example; unparseable samples count as skip votes; disk cache keyed by prompt + judge settings |
+| Self-judge | `rlm/sleep/local_judge.py` | **The judge is the policy model itself** (frozen base, higher TTC: sampling + long generations). External judges remain available for ablation via `--judge-model <name>` |
 | Dataset | `rlm/sleep/dataset.py` | Verified examples only; general replay mix-in; **leakage guard** (fails if any example sources from held-out episodes) |
 | Train | `rlm/sleep/lora.py` | Masked-SFT LoRA (peft, no trl), sized for Colab T4/L4 with 1–4B instruct models |
-| Eval | `rlm/sleep/evals.py` | Next-day NLL (transfer), test NLL (generalization), retention NLL (forgetting guard) |
-| Loop | `rlm/sleep/loop.py` | `run_night(...)` — one cycle, every artifact persisted |
-| Sweep | `rlm/sleep/sweep.py` | Dotted-key grid (e.g. `adapter.lr`, `gate.budget_fraction`) → CSV + leaderboard |
+| Eval | `rlm/sleep/evals.py` | Next-day NLL (transfer), test NLL (generalization), retention NLL over a frozen 50-item probe (forgetting guard); `rlm/sleep/winrate.py` adds blind pairwise A/B win-rate |
+| Loop | `rlm/sleep/loop.py` | `run_night(...)` — one cycle, every artifact persisted; `extra_examples` enables the cumulative re-distill baseline (`--cumulative`) |
+| Sweep | `rlm/sleep/sweep.py` | Dotted-key grid (e.g. `adapter.lr`, `gate.budget_fraction`) → CSV + leaderboard; judge cache shared across points |
 
 ## Design decisions (and where they come from)
 
@@ -50,12 +56,16 @@ day N+1 + test ◄── EVAL (NLL) ◄──── adapter ◄─────�
 # Offline, instant, no GPU:
 uv run python scripts/sleep/run_nightly.py --synthetic --mock-judge --dry-run --days 2
 
-# Real (GPU + judge key):
-uv pip install -e ".[sleep]"
-OPENAI_API_KEY=... uv run python scripts/sleep/run_nightly.py --days 2
+# Real, fully self-contained (no API key; CPU works for 0.5B, GPU for 1.5B+):
+uv sync --extra sleep   # CPU torch via [tool.uv]; Colab/pip installs get CUDA
+uv run python scripts/sleep/run_nightly.py \
+    --dataset THUDM/AgentInstruct --config os --episodes-per-day 16 \
+    --policy-model Qwen/Qwen2.5-0.5B-Instruct --judge-model self \
+    --device cpu --use-surprise --days 1
 
-# Colab sweep:
-#   notebooks/sleep_consolidation_sweep.ipynb
+# Multi-night cumulative baseline:        add --cumulative
+# External judge (ablation):              --judge-model gpt-4o  (needs OPENAI_API_KEY)
+# Colab sweep: notebooks/sleep_consolidation_sweep.ipynb
 ```
 
 ## Reading the metrics
@@ -71,13 +81,18 @@ so negative = improvement**:
 
 ## Current limitations (deliberate PoC cuts)
 
-- AgentInstruct traces are expert demonstrations, so the gate's
-  failure-pattern features fire rarely there; the NLL `SurpriseGate` is the
-  interesting selector on clean traces (sweepable via `gate.use_surprise`).
-  Synthetic traces plant failures for development and tests.
-- One adapter per night, no cross-night accumulation/merging yet — the
-  multi-night question (merge? route? re-distill?) is exactly the
-  consolidation-stack discussion in the docs; the harness already evaluates
-  any candidate policy via `eval_fn`.
-- Judged win-rate eval (generate + blind A/B) is not wired in; NLL is the
-  cheap, deterministic v1 metric.
+- AgentInstruct traces are expert demonstrations: measured on the live
+  data, the heuristic gate selects 6% (os) / 2% (db) / 9% (alfworld) and
+  ~0% on webshop/kg/mind2web — on those domains `--use-surprise` is the
+  only viable selector. Synthetic traces plant failures for development.
+- Cross-night *merging/routing* of adapters is still open; the implemented
+  multi-night baselines are independent nights (default) and cumulative
+  re-distillation (`--cumulative`).
+- Win-rate eval (`rlm/sleep/winrate.py`) is implemented but not wired into
+  `run_night`; call it from a notebook/script on the night's adapter.
+- A small self-judge can rubber-stamp verification (observed at 0.5B:
+  mediocre examples pass YES/NO). The verification ablation and a
+  corrupted-example canary are the Phase-5 checks for this.
+
+See `docs/sleep_testing_plan.md` for measured CPU results and the GPU
+continuation plan.
