@@ -2863,7 +2863,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0.0" },
     { name = "torch", marker = "extra == 'sleep'", specifier = ">=2.3.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "extra == 'titans'", specifier = ">=2.3.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "transformers", marker = "extra == 'sleep'", specifier = ">=4.45.0" },
+    { name = "transformers", marker = "extra == 'sleep'", specifier = ">=4.56.0" },
     { name = "transformers", marker = "extra == 'titans'", specifier = ">=4.45.0" },
 ]
 provides-extras = ["modal", "e2b", "daytona", "prime", "ipython", "titans", "sleep"]

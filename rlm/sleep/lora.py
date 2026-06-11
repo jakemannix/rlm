@@ -27,7 +27,9 @@ def load_policy(model_name: str, device: str, torch_dtype: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     dtype = getattr(torch, torch_dtype)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
+    # `dtype=` replaced `torch_dtype=` in transformers >= 4.56 (the sleep
+    # extra's floor); the old kwarg only warns on 5.x but warns every load.
+    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype)
     model.to(device)
     return model, tokenizer
 
