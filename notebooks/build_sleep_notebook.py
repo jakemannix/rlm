@@ -40,7 +40,9 @@ Runtime: T4/L4 GPU. Policy model defaults to `Qwen/Qwen2.5-1.5B-Instruct`
         ),
         code(
             """# 2. Load agentic traces from HuggingFace and make deterministic splits.
-#    AgentInstruct domains: os, db, alfworld, webshop, kg, mind2web.
+#    AgentInstruct domains (exposed as splits): os, db, alfworld, webshop,
+#    kg, mind2web — sized 122-538 episodes; "db" is the biggest (best for
+#    multi-night runs).
 from rlm.sleep import partition_days, split_episodes
 from rlm.sleep.traces import load_hf_traces
 
@@ -53,17 +55,13 @@ print("\\nSample episode:\\n" + days[0][0].transcript(max_chars=600))
 """
         ),
         code(
-            """# 3. Configure. The judge needs an API key (or use the mock to smoke-test).
-import os
-from getpass import getpass
-
-from rlm.clients.openai import OpenAIClient
+            """# 3. Configure. The judge is the *same* policy model with a higher
+#    thinking budget (self-consistency samples, longer generations) — no
+#    API key needed. The generation-verification gap within one model is
+#    the whole premise (docs/learning_signal.md).
 from rlm.sleep import SleepConfig
+from rlm.sleep.local_judge import LocalHFJudge
 
-if "OPENAI_API_KEY" not in os.environ:
-    os.environ["OPENAI_API_KEY"] = getpass("OpenAI API key (for the judge): ")
-
-judge_lm = OpenAIClient(model_name="gpt-4o")
 config = SleepConfig(
     policy_model="Qwen/Qwen2.5-1.5B-Instruct",
     device="cuda",
@@ -71,6 +69,17 @@ config = SleepConfig(
 )
 config.judge.n_samples = 3   # self-consistency: more samples = more judge TTC
 config.gate.budget_fraction = 0.25
+config.gate.use_surprise = True  # the selector that matters on expert traces
+
+judge_lm = LocalHFJudge.from_policy(
+    config.policy_model,
+    device=config.device,
+    torch_dtype=config.torch_dtype,
+    temperature=config.judge.temperature,
+    max_new_tokens=config.judge.max_new_tokens,
+)
+# To ablate self-judging vs. a stronger external judge instead:
+#   from rlm.clients.openai import OpenAIClient; judge_lm = OpenAIClient(model_name="gpt-4o")
 print(config)
 """
         ),
@@ -108,6 +117,8 @@ only judge-verified examples earned a gradient.
 import json
 
 outputs = json.loads(open("runs/sleep/colab/day_000/judge_outputs.json").read())
+n_fail = sum(o.get("n_parse_failures", 0) for o in outputs)
+print(f"parse failures: {n_fail} across {len(outputs)} reflections")
 for o in outputs[:5]:
     print(f"[{o['verdict']} conf={o['confidence']:.2f}] {o['lesson']}")
     for ex in o["examples"]:
@@ -136,14 +147,15 @@ csv_path = run_sweep(
         ),
         code(
             """# 7. Plot the sweep: forward transfer vs forgetting.
-import pandas as pd
 import matplotlib.pyplot as plt
+import pandas as pd
 
 df = pd.read_csv(csv_path)
 fig, ax = plt.subplots(figsize=(7, 5))
 scatter = ax.scatter(df["retention_delta"], df["next_day_delta"],
                      c=df["adapter.lr"], s=60, cmap="viridis")
-ax.axhline(0, color="gray", lw=0.5); ax.axvline(0, color="gray", lw=0.5)
+ax.axhline(0, color="gray", lw=0.5)
+ax.axvline(0, color="gray", lw=0.5)
 ax.set_xlabel("retention delta (forgetting; lower-left is better)")
 ax.set_ylabel("next-day delta (transfer)")
 ax.set_title("Sleep-consolidation sweep: transfer vs forgetting")
@@ -159,8 +171,12 @@ df.sort_values("next_day_delta").head(10)
   on the *fixed* test split to plot learning curves over a week.
 * **Stronger judge**: bump `config.judge.n_samples`, or point `judge_lm` at a
   reasoning model — the whole premise is that judge TTC is cheap at 3am.
-* **Real surprise gate**: pass a `SurpriseGate` (policy-model NLL) to
-  `select_for_reflection` and sweep `gate.use_surprise`.
+* **Judge quality check**: inspect `n_parse_failures` across
+  `judge_outputs.json` — a self-judge that can't emit JSON earns no updates.
+* **Win-rate eval**: `rlm.sleep.winrate.generate_pairs` + `judged_win_rate`
+  for blind base-vs-adapted A/B — the metric NLL skeptics ask for.
+* **Cumulative nights**: `run_night(..., extra_examples=...)` or the CLI's
+  `--cumulative` re-distill baseline — does knowledge accumulate?
 * **Other trace sets**: any HF dataset with `conversations` or `messages`
   fields normalizes via `rlm.sleep.traces.normalize_record`.
 """
