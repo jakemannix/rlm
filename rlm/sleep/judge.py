@@ -17,8 +17,11 @@ Test-time compute is spent two ways:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from dataclasses import asdict
+from pathlib import Path
 
 from rlm.clients.base_lm import BaseLM
 from rlm.sleep.config import JudgeConfig
@@ -72,10 +75,42 @@ def extract_json(text: str) -> dict:
     return json.loads(match.group(0))
 
 
+def _output_from_dict(record: dict) -> JudgeOutput:
+    examples = [TrainingExample(**ex) for ex in record.get("examples", [])]
+    return JudgeOutput(**(record | {"examples": examples}))
+
+
 class ReflectionJudge:
-    def __init__(self, lm: BaseLM, config: JudgeConfig):
+    """Reflect over gated episodes; optionally cache outputs on disk.
+
+    The cache is keyed by everything that determines a reflection — the
+    full prompt (which embeds the transcript), the judge's identity and
+    sampling settings, and the verification flags — so sweep points that
+    share gate/judge settings pay for the judge exactly once.
+    """
+
+    def __init__(self, lm: BaseLM, config: JudgeConfig, cache_path: str | Path | None = None):
         self.lm = lm
         self.config = config
+        self.cache_path = Path(cache_path) if cache_path is not None else None
+        self.cache_hits = 0
+        self._cache: dict[str, dict] = {}
+        if self.cache_path is not None and self.cache_path.exists():
+            self._cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
+
+    def _cache_key(self, prompt: str) -> str:
+        cfg = self.config
+        ident = "\x1e".join(
+            [
+                prompt,
+                self.lm.model_name,
+                str(getattr(self.lm, "temperature", None)),
+                str(cfg.n_samples),
+                str(cfg.min_confidence),
+                str(cfg.verify_examples),
+            ]
+        )
+        return hashlib.sha256(ident.encode("utf-8")).hexdigest()
 
     def reflect(self, episode: Episode) -> JudgeOutput:
         """Run ``n_samples`` reflections over one episode and aggregate."""
@@ -84,6 +119,19 @@ class ReflectionJudge:
             max_examples=cfg.max_examples_per_episode,
             transcript=episode.transcript(max_chars=cfg.max_transcript_chars),
         )
+        key = self._cache_key(prompt)
+        if key in self._cache:
+            self.cache_hits += 1
+            return _output_from_dict(self._cache[key])
+        output = self._reflect_uncached(episode, prompt)
+        if self.cache_path is not None:
+            self._cache[key] = asdict(output)
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self.cache_path.write_text(json.dumps(self._cache), encoding="utf-8")
+        return output
+
+    def _reflect_uncached(self, episode: Episode, prompt: str) -> JudgeOutput:
+        cfg = self.config
         raw_responses = [self.lm.completion(prompt) for _ in range(cfg.n_samples)]
         # A sample that fails to parse counts as a (silent) skip vote: a judge
         # that can't even produce valid JSON shouldn't get a model update.

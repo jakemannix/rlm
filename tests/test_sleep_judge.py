@@ -102,6 +102,52 @@ def test_all_samples_unparseable_yields_skip_not_crash():
     assert out.confidence == 1.0
 
 
+def test_cache_second_reflect_makes_zero_lm_calls(tmp_path):
+    cache = tmp_path / "judge_cache.json"
+    ep = episode()
+
+    lm1 = MockLM(responses=[LEARN_RESPONSE, "YES"])
+    judge1 = ReflectionJudge(lm1, JudgeConfig(n_samples=1), cache_path=cache)
+    first = judge1.reflect(ep)
+    assert lm1._call_count == 2  # reflect + verify
+
+    # Fresh judge instance, fresh LM with NO responses: any call would raise.
+    lm2 = MockLM(responses=[])
+    judge2 = ReflectionJudge(lm2, JudgeConfig(n_samples=1), cache_path=cache)
+    second = judge2.reflect(ep)
+    assert lm2._call_count == 0
+    assert judge2.cache_hits == 1
+    assert second.verdict == first.verdict
+    assert second.examples[0].prompt == first.examples[0].prompt
+    assert second.examples[0].verified == first.examples[0].verified
+
+
+def test_cache_misses_on_different_judge_settings(tmp_path):
+    cache = tmp_path / "judge_cache.json"
+    ep = episode()
+    judge1 = ReflectionJudge(
+        MockLM(responses=[LEARN_RESPONSE, "YES"]), JudgeConfig(n_samples=1), cache_path=cache
+    )
+    judge1.reflect(ep)
+
+    # Same episode, different n_samples -> different key -> real calls again.
+    lm = MockLM(responses=[LEARN_RESPONSE, LEARN_RESPONSE, "YES"])
+    judge2 = ReflectionJudge(lm, JudgeConfig(n_samples=2), cache_path=cache)
+    judge2.reflect(ep)
+    assert lm._call_count == 3
+    assert judge2.cache_hits == 0
+
+
+def test_no_cache_path_means_no_caching():
+    ep = episode()
+    lm = MockLM(response_fn=lambda p: "YES" if "verifying" in str(p) else LEARN_RESPONSE)
+    judge = ReflectionJudge(lm, JudgeConfig(n_samples=1))
+    judge.reflect(ep)
+    calls_after_first = lm._call_count
+    judge.reflect(ep)
+    assert lm._call_count == 2 * calls_after_first
+
+
 def test_malformed_examples_are_dropped_not_fatal():
     response = json.dumps(
         {

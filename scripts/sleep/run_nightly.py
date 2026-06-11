@@ -70,6 +70,7 @@ def main() -> None:
             config=config,
             judge_lm=judge_lm,
             out_dir=Path(args.out) / f"day_{day:03d}",
+            judge_cache_path=Path(args.out) / "judge_cache.json",
             **kwargs,
         )
         print(

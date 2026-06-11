@@ -95,6 +95,9 @@ def run_sweep(
             out_dir=out_dir / f"point_{i:03d}",
             train_fn=train_fn,
             eval_fn=eval_fn,
+            # Shared across points: grid points with identical gate/judge
+            # settings pay for the judge exactly once.
+            judge_cache_path=out_dir / "judge_cache.json",
         )
         rows.append(result_row(run_name, result) | overrides)
 

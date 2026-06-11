@@ -101,6 +101,7 @@ def run_night(
     train_fn: TrainFn = default_train_fn,
     eval_fn: EvalFn = default_eval_fn,
     surprise_gate: SurpriseGate | None = None,
+    judge_cache_path: str | Path | None = None,
 ) -> DayResult:
     """Run one full nightly cycle and persist every artifact under ``out_dir``."""
     out_dir = Path(out_dir)
@@ -116,8 +117,8 @@ def run_night(
         json.dumps([asdict(d) for d in decisions], indent=2)
     )
 
-    # Stage 2 — expensive reflection on the gated subset.
-    judge = ReflectionJudge(judge_lm, config.judge)
+    # Stage 2 — expensive reflection on the gated subset (cached when asked).
+    judge = ReflectionJudge(judge_lm, config.judge, cache_path=judge_cache_path)
     outputs = judge.reflect_all(selected)
     (out_dir / "judge_outputs.json").write_text(json.dumps([asdict(o) for o in outputs], indent=2))
 
