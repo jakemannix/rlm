@@ -25,7 +25,7 @@ def judge_lm() -> MockLM:
 
     def respond(prompt) -> str:
         text = prompt if isinstance(prompt, str) else str(prompt)
-        return "YES" if "verifying a candidate" in text else LEARN_RESPONSE
+        return "VERDICT: YES" if "candidate training example" in text else LEARN_RESPONSE
 
     return MockLM(response_fn=respond)
 

@@ -54,15 +54,35 @@ EPISODE:
 """
 
 VERIFY_PROMPT = """\
-You are verifying a candidate training example before it is used to train a model.
+You are reviewing one candidate training example before it is used to \
+fine-tune a model. Your default is suspicion: a bad example that slips \
+through damages the model, while a rejected good example costs little.
 
 LESSON: {lesson}
 PROMPT: {prompt}
 RESPONSE: {response}
 
-Is the response (a) a correct, helpful answer to the prompt and (b) consistent \
-with the lesson? Answer with exactly one word: YES or NO.
+Check, in order:
+1. Is the response factually and technically correct?
+2. Would following it cause harm (destructive commands, data loss, security risks)?
+3. Does it actually answer the prompt?
+4. Is it consistent with the lesson?
+
+State any problems you find in one or two short sentences, then give your \
+verdict on the last line in exactly this form:
+VERDICT: YES
+or
+VERDICT: NO
 """
+
+VERDICT_RE = re.compile(r"VERDICT:\s*(YES|NO)", re.IGNORECASE)
+
+
+def parse_verify_verdict(text: str) -> bool:
+    """Last ``VERDICT: YES/NO`` wins; anything unparseable fails closed."""
+    matches = VERDICT_RE.findall(text or "")
+    return bool(matches) and matches[-1].upper() == "YES"
+
 
 JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -109,6 +129,9 @@ class ReflectionJudge:
                 str(cfg.n_samples),
                 str(cfg.min_confidence),
                 str(cfg.verify_examples),
+                # Cached outputs embed verified flags, so a change to either
+                # prompt template must invalidate them.
+                REFLECT_PROMPT + VERIFY_PROMPT,
             ]
         )
         return hashlib.sha256(ident.encode("utf-8")).hexdigest()
@@ -192,13 +215,21 @@ class ReflectionJudge:
         )
 
     def verify(self, example: TrainingExample) -> bool:
-        """The verification gate: YES/NO check on one distilled example."""
-        response = self.lm.completion(
-            VERIFY_PROMPT.format(
-                lesson=example.lesson, prompt=example.prompt, response=example.response
-            )
+        """The verification gate: an adversarial YES/NO check on one example."""
+        prompt = VERIFY_PROMPT.format(
+            lesson=example.lesson, prompt=example.prompt, response=example.response
         )
-        return response.strip().upper().startswith("YES")
+        # Verification is discrimination, not generation: greedy-decode it on
+        # judges that expose a sampling temperature (sampling only adds noise).
+        sampled_temperature = getattr(self.lm, "temperature", None)
+        if sampled_temperature is not None:
+            self.lm.temperature = 0.0
+        try:
+            response = self.lm.completion(prompt)
+        finally:
+            if sampled_temperature is not None:
+                self.lm.temperature = sampled_temperature
+        return parse_verify_verdict(response)
 
     def reflect_all(self, episodes: list[Episode]) -> list[JudgeOutput]:
         return [self.reflect(ep) for ep in episodes]

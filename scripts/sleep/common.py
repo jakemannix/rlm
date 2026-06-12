@@ -89,8 +89,8 @@ def build_judge(args: argparse.Namespace, judge_config: JudgeConfig | None = Non
         from tests.mock_lm import MockLM
 
         return MockLM(
-            response_fn=lambda p: "YES"
-            if "verifying a candidate" in str(p)
+            response_fn=lambda p: "VERDICT: YES"
+            if "candidate training example" in str(p)
             else MOCK_LEARN_RESPONSE
         )
     if args.judge_model == "self":

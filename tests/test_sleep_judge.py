@@ -43,7 +43,7 @@ def test_extract_json_raises_without_json():
 
 def test_learn_verdict_produces_verified_examples():
     # reflect (1 sample) then verify (1 per example)
-    lm = MockLM(responses=[LEARN_RESPONSE, "YES"])
+    lm = MockLM(responses=[LEARN_RESPONSE, "No problems found.\nVERDICT: YES"])
     judge = ReflectionJudge(lm, JudgeConfig(n_samples=1, verify_examples=True))
     out = judge.reflect(episode())
     assert out.verdict == "learn"
@@ -53,7 +53,7 @@ def test_learn_verdict_produces_verified_examples():
 
 
 def test_failed_verification_marks_example_unverified():
-    lm = MockLM(responses=[LEARN_RESPONSE, "NO, the response is wrong."])
+    lm = MockLM(responses=[LEARN_RESPONSE, "The response is wrong.\nVERDICT: NO"])
     judge = ReflectionJudge(lm, JudgeConfig(n_samples=1, verify_examples=True))
     out = judge.reflect(episode())
     assert out.verdict == "learn"
@@ -106,7 +106,7 @@ def test_cache_second_reflect_makes_zero_lm_calls(tmp_path):
     cache = tmp_path / "judge_cache.json"
     ep = episode()
 
-    lm1 = MockLM(responses=[LEARN_RESPONSE, "YES"])
+    lm1 = MockLM(responses=[LEARN_RESPONSE, "VERDICT: YES"])
     judge1 = ReflectionJudge(lm1, JudgeConfig(n_samples=1), cache_path=cache)
     first = judge1.reflect(ep)
     assert lm1._call_count == 2  # reflect + verify
@@ -126,12 +126,14 @@ def test_cache_misses_on_different_judge_settings(tmp_path):
     cache = tmp_path / "judge_cache.json"
     ep = episode()
     judge1 = ReflectionJudge(
-        MockLM(responses=[LEARN_RESPONSE, "YES"]), JudgeConfig(n_samples=1), cache_path=cache
+        MockLM(responses=[LEARN_RESPONSE, "VERDICT: YES"]),
+        JudgeConfig(n_samples=1),
+        cache_path=cache,
     )
     judge1.reflect(ep)
 
     # Same episode, different n_samples -> different key -> real calls again.
-    lm = MockLM(responses=[LEARN_RESPONSE, LEARN_RESPONSE, "YES"])
+    lm = MockLM(responses=[LEARN_RESPONSE, LEARN_RESPONSE, "VERDICT: YES"])
     judge2 = ReflectionJudge(lm, JudgeConfig(n_samples=2), cache_path=cache)
     judge2.reflect(ep)
     assert lm._call_count == 3
@@ -140,12 +142,68 @@ def test_cache_misses_on_different_judge_settings(tmp_path):
 
 def test_no_cache_path_means_no_caching():
     ep = episode()
-    lm = MockLM(response_fn=lambda p: "YES" if "verifying" in str(p) else LEARN_RESPONSE)
+    lm = MockLM(
+        response_fn=lambda p: "VERDICT: YES"
+        if "candidate training example" in str(p)
+        else LEARN_RESPONSE
+    )
     judge = ReflectionJudge(lm, JudgeConfig(n_samples=1))
     judge.reflect(ep)
     calls_after_first = lm._call_count
     judge.reflect(ep)
     assert lm._call_count == 2 * calls_after_first
+
+
+def test_parse_verify_verdict_variants():
+    from rlm.sleep.judge import parse_verify_verdict
+
+    assert parse_verify_verdict("VERDICT: YES")
+    assert parse_verify_verdict("The SQL is correct.\nVERDICT: yes")
+    assert not parse_verify_verdict("Wrong command.\nVERDICT: NO")
+    assert not parse_verify_verdict("Looks good to me!")  # no verdict -> fail closed
+    assert not parse_verify_verdict("")
+    assert not parse_verify_verdict("VERDICT: YES\nWait, actually:\nVERDICT: NO")  # last wins
+
+
+def test_verify_greedy_decodes_then_restores_temperature():
+    """Sampling-capable judges are forced greedy for the verify call only."""
+    from rlm.sleep.types import TrainingExample
+
+    seen: list[float] = []
+
+    def respond(prompt) -> str:
+        seen.append(lm.temperature)
+        return "VERDICT: YES"
+
+    lm = MockLM(response_fn=respond)
+    lm.temperature = 0.7
+    judge = ReflectionJudge(lm, JudgeConfig(n_samples=1, verify_examples=True))
+    example = TrainingExample(prompt="p", response="r", lesson="l", source_episode_id="e")
+    assert judge.verify(example)
+    assert seen == [0.0]
+    assert lm.temperature == 0.7
+
+
+def test_cache_invalidated_by_verify_prompt_change(tmp_path, monkeypatch):
+    """verified flags live inside cached outputs; a prompt edit must not reuse them."""
+    import rlm.sleep.judge as judge_mod
+
+    cache = tmp_path / "judge_cache.json"
+    ep = episode()
+    judge1 = ReflectionJudge(
+        MockLM(responses=[LEARN_RESPONSE, "VERDICT: YES"]),
+        JudgeConfig(n_samples=1),
+        cache_path=cache,
+    )
+    judge1.reflect(ep)
+
+    monkeypatch.setattr(judge_mod, "VERIFY_PROMPT", judge_mod.VERIFY_PROMPT + "\nBe stricter.")
+    lm = MockLM(responses=[LEARN_RESPONSE, "VERDICT: NO"])
+    judge2 = ReflectionJudge(lm, JudgeConfig(n_samples=1), cache_path=cache)
+    out = judge2.reflect(ep)
+    assert judge2.cache_hits == 0
+    assert lm._call_count == 2
+    assert not out.examples[0].verified
 
 
 def test_malformed_examples_are_dropped_not_fatal():
