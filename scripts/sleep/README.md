@@ -48,3 +48,30 @@ sweeps add `sweep_results.csv`.
 
 For Colab, use `notebooks/sleep_consolidation_sweep.ipynb` (regenerate via
 `python notebooks/build_sleep_notebook.py`).
+
+## Claude Code traces → gold-labeled memories
+
+Natural sessions carry the error→correction signal AgentInstruct lacks
+(measured: 41% of episodes vs 9% on the best AgentInstruct domain). The
+transcripts are personal data: archive and label locally, never commit
+them, and prefer `--device mps`/`cpu` over remote GPUs.
+
+```bash
+# 1. Preserve transcripts before Claude Code's cleanup prunes them
+#    (idempotent; re-run any time; archive lives outside the repo)
+uv run python scripts/sleep/extract_cc_sessions.py
+
+# 2. Offline smoke of the labeling stack
+uv run python scripts/sleep/label_gold.py --mock-judge --limit-episodes 5
+
+# 3. Real labeling: reflect -> verify -> 5-dim rubric -> adversarial
+#    refuters -> gold/silver/reject (self-judge, no API key)
+uv run python scripts/sleep/label_gold.py --device mps \
+    --policy-model Qwen/Qwen2.5-1.5B-Instruct --limit-episodes 30
+```
+
+Outputs under `runs/sleep/gold/` (gitignored): `gold_labels.jsonl`
+(every candidate with scores and votes), `sft_gold.jsonl` (trainer-ready
+gold examples), `summary.json`. The canary
+(`scripts/sleep/verify_canary.py`) still applies — run it before
+trusting a new judge model's labels.
