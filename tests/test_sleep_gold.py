@@ -151,9 +151,13 @@ def test_refute_template_echo_does_not_count_as_reject():
     echo_then_answer = "VERDICT: YES\nor\nVERDICT: NO\n\nNo real flaw.\nVERDICT: YES"
     assert parse_refute_verdict(echo_then_answer) is True
     pure_echo = "VERDICT: YES\nor\nVERDICT: NO"
-    assert parse_refute_verdict(pure_echo) is False  # template's last line, fails closed
+    assert parse_refute_verdict(pure_echo) is False  # template's closing line, fails closed
     assert parse_refute_verdict("rambling with no verdict") is None
     assert parse_refute_verdict("") is None
+    # observed 1.5B forms: verdict split across lines, with markdown
+    assert parse_refute_verdict("Strong objection here.\n**VERDICT:**\nNO") is False
+    assert parse_refute_verdict("No real flaw.\n**VERDICT:**  \n  YES") is True
+    assert parse_refute_verdict("objection...\nVERDICT:\nYES\nor\nVERDICT:\nNO") is False
 
 
 def test_fatal_flaw_placeholders_not_counted():

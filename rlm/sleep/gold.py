@@ -123,18 +123,21 @@ NO_FLAW_RE = re.compile(
 
 
 def parse_refute_verdict(text: str) -> bool | None:
-    """Verdict from the LAST non-empty line only; None = unparseable.
+    """Verdict from the closing lines of the response; None = unparseable.
 
-    The refute prompt's format spec literally ends with a ``VERDICT: NO``
-    line, so a judge that echoes the template before answering would
-    corrupt an anywhere-in-text last-match parse toward rejection. A real
-    answer ends with its own verdict line; anything else fails closed.
+    Window of the last three non-empty lines, last match wins. Rationale,
+    all observed on the 1.5B self-judge: answers end with a verdict but
+    sometimes split it across lines ("**VERDICT:**\\nNO"), so the final
+    line alone is too strict; and the prompt's format spec itself ends
+    with a literal ``VERDICT: NO`` line, so an anywhere-in-text parse
+    would let a template echo bias toward rejection. A pure echo's
+    closing lines still read as NO — fail-closed is the right failure.
     """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if not lines:
         return None
-    match = VERDICT_RE.search(lines[-1])
-    return match.group(1).upper() == "YES" if match else None
+    matches = VERDICT_RE.findall(" ".join(lines[-3:]))
+    return matches[-1].upper() == "YES" if matches else None
 
 
 class _CallCache:
