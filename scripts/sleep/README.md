@@ -75,3 +75,15 @@ Outputs under `runs/sleep/gold/` (gitignored): `gold_labels.jsonl`
 gold examples), `summary.json`. The canary
 (`scripts/sleep/verify_canary.py`) still applies — run it before
 trusting a new judge model's labels.
+
+```bash
+# 4. Frontier-authored memory pairs — no judge needed: every Write to a
+#    session-memory file is an explicit in-context "worth remembering"
+#    decision plus the distilled artifact, by a far stronger model.
+uv run python scripts/sleep/extract_memory_pairs.py
+```
+
+Outputs `memory_pairs.jsonl` (full provenance) and
+`sft_memory_pairs.jsonl` (context → memory chat pairs, anti-leakage
+filtered). These are the gold-standard distillation targets; the judged
+pipeline above is for scaling beyond what explicit memory writes cover.

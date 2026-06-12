@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +128,13 @@ def _human_text(content: Any) -> str | None:
     return text or None
 
 
+# A Write/Edit landing here is an explicit "this is worth remembering"
+# decision made in-context by the session's (frontier) model — the
+# highest-precision curation signal in the corpus.
+MEMORY_FILE_RE = re.compile(r"/memory/(?!MEMORY\.md$)[^/]+\.md$")
+MEMORY_DECISION_RE = re.compile(r"/memory/[^/]+\.md$|/Memory/[^/]+\.md$")
+
+
 def _render_tool_use(block: dict) -> str:
     name = block.get("name", "?")
     inp = block.get("input") or {}
@@ -169,6 +177,7 @@ class _EpisodeBuilder:
         self.n_tool_errors = 0
         self.n_soft_errors = 0
         self.n_user_corrections = 0
+        self.n_memory_writes = 0
         self.last_error_step = -1
         self.last_success_step = -1
         self.id_to_tool: dict[str, str] = {}
@@ -217,6 +226,7 @@ class _EpisodeBuilder:
                 "n_tool_errors": self.n_tool_errors,
                 "n_soft_errors": self.n_soft_errors,
                 "n_user_corrections": self.n_user_corrections,
+                "n_memory_writes": self.n_memory_writes,
             },
         )
 
@@ -305,9 +315,151 @@ def load_cc_session(
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     builder.n_tool_calls += 1
                     builder.id_to_tool[block.get("id", "")] = block.get("name", "?")
+                    inp = block.get("input") or {}
+                    if block.get("name") in ("Write", "Edit") and MEMORY_DECISION_RE.search(
+                        str(inp.get("file_path", ""))
+                    ):
+                        builder.n_memory_writes += 1
                     builder.add("assistant", _render_tool_use(block))
     flush()
     return episodes
+
+
+@dataclass
+class MemoryWritePair:
+    """One frontier-authored memory with the experience that produced it.
+
+    Mined from Write calls targeting memory files: the session's model
+    already decided this was worth remembering and wrote the distilled
+    artifact — a (context -> memory) training pair by construction, with
+    a far stronger author than any judge we run locally.
+    """
+
+    pair_id: str
+    session_id: str
+    file_name: str
+    task: str
+    context: list[Step]
+    memory: str
+
+    def to_messages(self) -> list[dict[str, str]]:
+        transcript = "\n".join(f"[{s.role}] {s.content}" for s in self.context)
+        user = (
+            f"TASK: {self.task}\n\n{transcript}\n\n"
+            "Distill the durable, reusable memory from this session that a "
+            "future session would need. Write it as a standalone note."
+        )
+        return [
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": self.memory},
+        ]
+
+
+def _overlaps_target(step_content: str, target: str, window: int = 120) -> bool:
+    """True when a context step quotes a sizeable chunk of the memory body
+    (the assistant often drafts the note in text right before writing it —
+    keeping that step would leak the target into the input)."""
+    for start in range(0, max(1, len(step_content) - window), window // 2):
+        if step_content[start : start + window] in target:
+            return True
+    return False
+
+
+def extract_memory_pairs(
+    path: str | Path,
+    context_steps: int = 30,
+    max_step_chars: int = 1500,
+    min_memory_chars: int = 120,
+) -> list[MemoryWritePair]:
+    """Mine (preceding context -> written memory) pairs from one session."""
+    path = Path(path)
+    session_id = path.stem
+    pairs: list[MemoryWritePair] = []
+    task = ""
+    window: list[Step] = []
+
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict) or rec.get("isSidechain"):
+                continue
+            if rec.get("type") not in ("user", "assistant"):
+                continue
+            message = rec.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+
+            if rec.get("type") == "user":
+                human = _human_text(content)
+                if human is not None:
+                    if not (INTERRUPT_RE.match(human) or CONTINUATION_RE.match(human)):
+                        if not (task and CORRECTION_RE.search(human)):
+                            task, window = human, []
+                        else:
+                            window.append(Step(role="user", content=human))
+                    continue
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_result":
+                            window.append(Step(role="tool", content=_render_tool_result(block)))
+                continue
+
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text", "").strip():
+                    window.append(Step(role="assistant", content=block["text"]))
+                elif block.get("type") == "tool_use":
+                    inp = block.get("input") or {}
+                    file_path = str(inp.get("file_path", ""))
+                    memory = str(inp.get("content") or "")
+                    if (
+                        block.get("name") == "Write"
+                        and MEMORY_FILE_RE.search(file_path)
+                        and len(memory) >= min_memory_chars
+                    ):
+                        memory = redact_secrets(memory)
+                        context = [
+                            Step(
+                                role=s.role,
+                                content=_truncate(redact_secrets(s.content), max_step_chars),
+                            )
+                            for s in window[-context_steps:]
+                            if not _overlaps_target(s.content, memory)
+                        ]
+                        pairs.append(
+                            MemoryWritePair(
+                                pair_id=f"mem_{session_id[:8]}_{len(pairs):03d}",
+                                session_id=session_id,
+                                file_name=Path(file_path).name,
+                                task=redact_secrets(_truncate(task, 800)),
+                                context=context,
+                                memory=memory,
+                            )
+                        )
+                    window.append(Step(role="assistant", content=_render_tool_use(block)))
+    return pairs
+
+
+def load_memory_pairs(
+    root: str | Path,
+    include_subagents: bool = False,
+    context_steps: int = 30,
+) -> list[MemoryWritePair]:
+    """Mine memory pairs from every session under ``root``."""
+    root = Path(root).expanduser()
+    pairs: list[MemoryWritePair] = []
+    for path in sorted(root.rglob("*.jsonl")):
+        if not include_subagents and "subagents" in path.parts:
+            continue
+        pairs.extend(extract_memory_pairs(path, context_steps=context_steps))
+    return pairs
 
 
 def load_cc_episodes(

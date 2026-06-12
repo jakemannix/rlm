@@ -260,6 +260,107 @@ def test_non_dict_jsonl_lines_do_not_crash(tmp_path):
     assert len(episodes) == 1 and episodes[0].task == "Task"
 
 
+MEMORY_BODY = (
+    "---\nname: prefer-debug-builds\ndescription: Skip --release during iteration\n---\n\n"
+    "Release builds take a minute on this project; use cargo check/build/test "
+    "without --release in the inner loop. Only ship --release for benchmarks."
+)
+
+
+def memory_session() -> list[dict]:
+    return [
+        rec("user", "Why are the builds so slow?"),
+        rec(
+            "assistant",
+            [
+                {"type": "text", "text": "Checking the build profile."},
+                tool_use("t1", "Bash", command="cargo build --release --timings"),
+            ],
+        ),
+        rec("user", [tool_result("t1", "Finished release in 61.2s")]),
+        rec("user", "no, don't use --release while we iterate!"),
+        rec(
+            "assistant",
+            [
+                {"type": "text", "text": "Got it — noting this for future sessions."},
+                tool_use(
+                    "t2",
+                    "Write",
+                    file_path="/Users/jake/.claude/projects/-x/memory/prefer-debug-builds.md",
+                    content=MEMORY_BODY,
+                ),
+                tool_use(
+                    "t3",
+                    "Edit",
+                    file_path="/Users/jake/.claude/projects/-x/memory/MEMORY.md",
+                    old_string="# Memory Index",
+                    new_string="# Memory Index\n- prefer-debug-builds",
+                ),
+            ],
+        ),
+        rec("user", [tool_result("t2", "ok"), tool_result("t3", "ok")]),
+        rec("assistant", [{"type": "text", "text": "Saved."}]),
+    ]
+
+
+def test_memory_pairs_extracted_with_context(tmp_path):
+    from rlm.sleep.cc_traces import extract_memory_pairs
+
+    pairs = extract_memory_pairs(write_session(tmp_path, memory_session()))
+    assert len(pairs) == 1  # the MEMORY.md index Edit is not a pair
+    pair = pairs[0]
+    assert pair.file_name == "prefer-debug-builds.md"
+    assert pair.task == "Why are the builds so slow?"
+    assert pair.memory == MEMORY_BODY
+    roles = [s.role for s in pair.context]
+    assert "tool" in roles and "user" in roles  # build output + the correction
+    assert any("don't use --release" in s.content for s in pair.context)
+    messages = pair.to_messages()
+    assert messages[0]["role"] == "user" and "Distill" in messages[0]["content"]
+    assert messages[1]["content"] == MEMORY_BODY
+
+
+def test_memory_pair_context_excludes_target_leakage(tmp_path):
+    from rlm.sleep.cc_traces import extract_memory_pairs
+
+    records = memory_session()
+    # assistant drafts the memory verbatim in text right before writing it
+    records.insert(
+        4,
+        rec("assistant", [{"type": "text", "text": "Here's the note I'll save:\n" + MEMORY_BODY}]),
+    )
+    pairs = extract_memory_pairs(write_session(tmp_path, records))
+    assert len(pairs) == 1
+    assert not any("Release builds take a minute" in s.content for s in pairs[0].context)
+
+
+def test_episode_meta_counts_memory_writes(tmp_path):
+    episodes = load_cc_session(write_session(tmp_path, memory_session()), min_steps=2)
+    assert len(episodes) == 1
+    assert episodes[0].meta["n_memory_writes"] == 2  # the file write + the index edit
+
+
+def test_tiny_memory_writes_are_skipped(tmp_path):
+    from rlm.sleep.cc_traces import extract_memory_pairs
+
+    records = [
+        rec("user", "Quick fix"),
+        rec(
+            "assistant",
+            [
+                tool_use(
+                    "t1",
+                    "Write",
+                    file_path="/Users/jake/.claude/projects/-x/memory/stub.md",
+                    content="tiny",
+                )
+            ],
+        ),
+        rec("user", [tool_result("t1", "ok")]),
+    ]
+    assert extract_memory_pairs(write_session(tmp_path, records)) == []
+
+
 def test_long_step_truncation_keeps_tail(tmp_path):
     records = [
         rec("user", "Big output"),

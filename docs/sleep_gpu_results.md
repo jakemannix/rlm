@@ -268,6 +268,22 @@ is now candidate *generation* quality, not gate calibration. Next levers,
 in order: a larger local judge (the hardware fits 7–14B on MPS easily),
 `--include-silver`, then a training night on `sft_gold.jsonl` vs base.
 
+### Frontier-authored memory pairs (the judge-free gold tier)
+
+The transcripts also contain ~70 explicit memory-decision events: the
+session's model (frontier-class) deciding in-context that something was
+worth remembering and writing the distilled note itself (session-memory
+files, MEMORY.md index updates, "noting this for later" text).
+`extract_memory_pairs.py` mines the full-file Writes into (context →
+memory) pairs: **14 pairs from 4 sessions, median 2,051 chars of memory
+with ~28 steps of grounding context**, anti-leakage-filtered (context
+steps that quote the memory body are dropped). These are distillation
+targets authored by a model far stronger than any local judge — the
+quality gap over the 1.5B's own distillations is immediately visible —
+and the supply grows with every Claude Code session now that transcripts
+are retained. The judged gold pipeline remains the scaling path for
+experiences that never triggered an explicit memory write.
+
 ## Cumulative GPU budget actually spent
 
 G1 ~6 min (+1 failed-train run ~5 min) | canary ×3 ~7 min | G2 ×2
