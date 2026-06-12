@@ -99,6 +99,7 @@ def load_frontier_memories(
     audit_dir: str | Path,
     conversations_path: str | Path | None = None,
     window: int = 4,
+    max_message_chars: int = 4000,
     max_evidence_per_memory: int = 3,
 ) -> list[FrontierMemory]:
     """Load memory_commit_candidates.jsonl with evidence fully resolved."""
@@ -121,7 +122,9 @@ def load_frontier_memories(
         for i, line in enumerate(f):
             row = json.loads(line)
             evidence = [
-                resolve_evidence(index[eid], by_uuid, window=window)
+                resolve_evidence(
+                    index[eid], by_uuid, window=window, max_message_chars=max_message_chars
+                )
                 for eid in row.get("ids", [])[:max_evidence_per_memory]
                 if eid in index
             ]
