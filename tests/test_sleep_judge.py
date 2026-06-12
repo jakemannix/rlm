@@ -41,6 +41,19 @@ def test_extract_json_raises_without_json():
         extract_json("no json here")
 
 
+def test_extract_json_salvages_sql_quote_escapes():
+    """LLMs writing SQL inside JSON emit \\' (invalid JSON); we recover it."""
+    text = (
+        '{"verdict": "learn", "confidence": 0.9,'
+        ' "lesson": "Quote LIKE patterns.",'
+        ' "examples": [{"prompt": "Find penicillin allergies.",'
+        ' "response": "SELECT * FROM allergies WHERE allergen LIKE \\\'%penicillin%\\\'"}]}'
+    )
+    parsed = extract_json(text)
+    assert parsed["verdict"] == "learn"
+    assert "%penicillin%" in parsed["examples"][0]["response"]
+
+
 def test_learn_verdict_produces_verified_examples():
     # reflect (1 sample) then verify (1 per example)
     lm = MockLM(responses=[LEARN_RESPONSE, "No problems found.\nVERDICT: YES"])

@@ -92,7 +92,13 @@ def extract_json(text: str) -> dict:
     match = JSON_BLOCK.search(text)
     if match is None:
         raise ValueError(f"No JSON object in judge response: {text[:200]!r}")
-    return json.loads(match.group(0))
+    block = match.group(0)
+    try:
+        return json.loads(block)
+    except json.JSONDecodeError:
+        # Judges writing SQL inside JSON strings emit \' — an invalid JSON
+        # escape (measured at 3/48 samples on AgentInstruct/db). Salvage it.
+        return json.loads(block.replace("\\'", "'"))
 
 
 def output_from_dict(record: dict) -> JudgeOutput:
