@@ -189,6 +189,51 @@ domain's base NLL ≤ 0.2 nats vs 2.1 on general text). Within that
 ceiling, alfworld is the domain where consolidation has signal, so G4
 runs there.
 
-## G4 — multi-night curves
+## G4 — multi-night curves (alfworld, 5 nights × 40 episodes, n_samples=3)
 
-*(pending)*
+Two policies, same five days of episodes, same gate/judge (cumulative ran
+entirely off the independent pass's judge cache: **0 LM calls**):
+independent nights (each adapter from base on that night only) vs
+`--cumulative` re-distill (night N = base + union of all verified
+examples so far). Figure: `docs/figures/g4_alfworld_curves.png`.
+
+Test-NLL deltas vs base (negative = win); base test NLL 0.0474:
+
+| night | n_examples (indep / cumul) | independent | cumulative |
+|---|---|---|---|
+| 0 | 4 / 4 | −0.0018 | −0.0018 |
+| 1 | 9 / 12 | −0.0010 | −0.0007 |
+| 2 | 10 / 22 | −0.0024 | −0.0012 |
+| 3 | 8 / 30 | −0.0010 | **+0.0019** |
+| 4 | 12 / 42 | −0.0017 | **+0.0102** |
+
+Next-day deltas: independent negative on all five nights; cumulative
+negative through night 2, +0.0023 at night 3, −0.0006 at night 4.
+
+**The divergence is the finding.** Independent nights produce small but
+*systematic* wins — 5/5 nights improved both next-day and test NLL, and
+the night-4 adapter beat base in a blind pairwise self-judged A/B on 32
+unseen next-day prompts: **22 wins / 10 losses / 0 ties (win-rate 0.688)**
+— the generation-level effect is much larger than the ~0.002-nat NLL
+deltas suggest. Cumulative re-distill matches that for ~2 nights and then
+*degrades through base* as the accumulated set grows, while its retention
+probe keeps improving (2.100 → 2.082, the best "retention" of any run) —
+it is memorizing its own replay mix at the expense of generalization.
+Interference sets in by ~30 accumulated examples at lr 2e-4 with 2 epochs.
+This is the forgetting-vs-accumulation result the consolidation program
+predicted: per-night material is learnable; the union is not the way to
+accumulate it. Cross-night merging/routing (explicitly out of PoC scope)
+is what this curve says to build next.
+
+**G5 note — verification ablation already measured:** the v1-vs-v3
+verifier comparison in G2 is the `verify_examples` ablation in the
+direction that matters: accept-all roughly doubled the next-day/test
+damage at identical settings. A dedicated `verify_examples=false` column
+would only re-confirm it.
+
+## Cumulative GPU budget actually spent
+
+G1 ~6 min (+1 failed-train run ~5 min) | canary ×3 ~7 min | G2 ×2
+~16 min | G3 sweep ~27 min | alfworld night ~5 min | G4 ~55 min
+(incl. 32-pair win-rate generation) ≈ **2.0 GPU-h total** vs the plan's
+7–11 GPU-h estimate for G1–G4. Judge: $0 API throughout (self-judge).

@@ -79,6 +79,31 @@ so negative = improvement**:
   raising `adapter.replay_ratio`, lowering `adapter.lr`/`epochs`, or tightening
   `judge.min_confidence`.
 
+## What the GPU runs found (L4, 1.5B, 2026-06-12)
+
+Full numbers: `docs/sleep_gpu_results.md`. The one-paragraph reading:
+
+**Each night's distillations are learnable; naive accumulation is not.**
+On alfworld (the one AgentInstruct domain whose traces carry failure
+signal), five consecutive independent nights each improved next-day and
+held-out test NLL, and the final adapter won a blind pairwise self-judged
+A/B against base 22–10 (n=32). The cumulative re-distill baseline tracked
+the independent curve for two nights, then *crossed above base* as the
+accumulated training set grew (test NLL +0.010 by night 5) while its
+retention probe kept improving — i.e. it traded generalization for
+memorizing its own replay mix. That divergence is the forgetting-vs-
+accumulation result this research program predicted: per-night learning
+works; cross-night consolidation needs something smarter than retraining
+on the union (`docs/figures/g4_alfworld_curves.png`). Two supporting
+findings: (1) the verification gate is load-bearing and direction-correct
+— an accept-all verifier doubled the damage on db, and the calibrated
+few-shot verifier (canary: 4/4 corrupted caught, 4/4 controls passed)
+rejected 41% of candidates, mostly genuinely broken SQL and transcript
+echoes; (2) on domains whose gold responses a 1.5B already models at
+≤0.17 nats/token (db, os), no (lr, rank, replay) region of a 36-point
+sweep produced a transfer win — saturated domains have nothing to teach
+the loop, and the damage from trying scales monotonically with lr.
+
 ## Current limitations (deliberate PoC cuts)
 
 - AgentInstruct traces are expert demonstrations: measured on the live
@@ -87,12 +112,13 @@ so negative = improvement**:
   only viable selector. Synthetic traces plant failures for development.
 - Cross-night *merging/routing* of adapters is still open; the implemented
   multi-night baselines are independent nights (default) and cumulative
-  re-distillation (`--cumulative`).
-- Win-rate eval (`rlm/sleep/winrate.py`) is implemented but not wired into
-  `run_night`; call it from a notebook/script on the night's adapter.
-- A small self-judge can rubber-stamp verification (observed at 0.5B:
-  mediocre examples pass YES/NO). The verification ablation and a
-  corrupted-example canary are the Phase-5 checks for this.
+  re-distillation (`--cumulative`) — and the G4 curves show the gap a
+  merging/routing scheme has to close.
+- The retention probe is too easy: across 36 sweep points and 10 G4
+  nights it never degraded — replay examples resemble the probe items, so
+  it measures replay exposure, not forgetting (damage shows on test NLL
+  instead). Append a harder v2 item list; never edit v1.
 
 See `docs/sleep_testing_plan.md` for measured CPU results and the GPU
-continuation plan.
+continuation plan, and `docs/sleep_gpu_results.md` for the executed
+GPU phases (G1–G4).
