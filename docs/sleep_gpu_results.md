@@ -231,6 +231,43 @@ direction that matters: accept-all roughly doubled the next-day/test
 damage at identical settings. A dedicated `verify_examples=false` column
 would only re-confirm it.
 
+## CC-traces: gold-labeling Jake's own sessions (local MPS, 2026-06-12)
+
+Follow-up to the saturation finding: natural Claude Code sessions carry
+the error→correction signal AgentInstruct lacks (41% of 165 loaded
+episodes vs 9% on alfworld). First labeled dataset, 30 highest-signal
+episodes, 1.5B self-judge on Apple MPS (personal data never left the
+machine):
+
+**Funnel: 64 candidates → 35 failed verify → 18 refuted → 6 gold +
+4 silver (16% keep).** Dimension means 3.96–4.6; zero parse failures
+end-to-end after the fixes below.
+
+Getting truthful gates took three live-fire fixes, all canary-validated:
+
+1. **Markdown verdicts**: the 1.5B emits `**VERDICT:** YES` and even
+   `**VERDICT:** **NO**`, and splits the label onto the next line. The
+   strict `VERDICT:\s*` parse fail-closed on 100% of refute votes (first
+   run kept nothing). Verdict regex now tolerates a ≤8-non-word-char gap;
+   refute parses a 3-line closing window.
+2. **Refute framing collapse**: with parsing fixed, the canary showed the
+   adversarial "try to refute it" gate rejecting 3/4 known-good controls
+   via generic nitpicks — the v2-verifier failure mode again. Reworked to
+   objection → judgment (real flaw vs universal nitpick) → verdict, with
+   a worked nitpick-dismissal example. Post-fix: 4/4 corrupted caught,
+   3/4 controls passed (verify gate: 4/4 + 4/4 throughout).
+3. **Process hygiene that made the iteration cheap**: raw judge responses
+   are disk-cached, so each fix relabeled prior episodes at zero LM cost.
+
+**Honest quality read of the gold set**: grounded and usable, but the
+1.5B distillation ceiling is visible — lessons skew toward process
+truisms dressed in session-specific nouns ("thoroughly test each
+component"), with a minority of genuinely specific items (missing-keys→
+None validation, byte-identical RMS-norm heads). The binding constraint
+is now candidate *generation* quality, not gate calibration. Next levers,
+in order: a larger local judge (the hardware fits 7–14B on MPS easily),
+`--include-silver`, then a training night on `sft_gold.jsonl` vs base.
+
 ## Cumulative GPU budget actually spent
 
 G1 ~6 min (+1 failed-train run ~5 min) | canary ×3 ~7 min | G2 ×2
