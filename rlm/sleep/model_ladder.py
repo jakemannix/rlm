@@ -186,17 +186,51 @@ class ModelResult:
         }
 
 
+class _NonEmpty:
+    """Raises on empty/None content BEFORE the cache can store it —
+    hybrid-thinking models sometimes return content=None (all budget spent
+    in reasoning), which would otherwise poison the cache permanently."""
+
+    def __init__(self, lm: BaseLM):
+        self._lm = lm
+        self.model_name = lm.model_name
+        self.temperature = getattr(lm, "temperature", None)
+
+    def completion(self, prompt: str) -> str:
+        response = self._lm.completion(prompt)
+        if not isinstance(response, str) or not response.strip():
+            raise ValueError("empty completion content")
+        return response
+
+
+def purge_invalid(cache: _CallCache) -> int:
+    """Drop cache entries containing non-string/empty responses (poison
+    from before _NonEmpty existed). Returns the number purged."""
+    bad = [
+        k for k, v in cache._data.items() if not all(isinstance(r, str) and r.strip() for r in v)
+    ]
+    for k in bad:
+        del cache._data[k]
+    if bad and cache.path is not None:
+        cache.path.write_text(json.dumps(cache._data), encoding="utf-8")
+    return len(bad)
+
+
 def _completion(lm: BaseLM, cache: _CallCache, kind: str, prompt: str, retries: int = 3) -> str:
-    """Cached completion with backoff: provider 429s/400s on OpenRouter are
-    routine and must cost one cell, never the sweep."""
+    """Cached completion with backoff: provider 429s/400s and empty contents
+    on OpenRouter are routine and must cost one cell, never the sweep."""
+    guarded = _NonEmpty(lm)
     last: Exception | None = None
     for attempt in range(retries):
         try:
-            return cache.completions(lm, kind, prompt, 1)[0]
+            return cache.completions(guarded, kind, prompt, 1)[0]
         except Exception as exc:  # noqa: BLE001 - provider errors are diverse
             last = exc
             time.sleep(2.0 * (attempt + 1))
     raise ValueError(f"api_error after {retries} attempts: {str(last)[:160]}")
+
+
+CAUGHT = (ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError)
 
 
 def classify_item(lm: BaseLM, cache: _CallCache, item: LadderItem, condition: str) -> dict:
@@ -218,7 +252,7 @@ def classify_item(lm: BaseLM, cache: _CallCache, item: LadderItem, condition: st
             "tier": str(parsed.get("tier", "")),
             "reason": str(parsed.get("reason", ""))[:300],
         }
-    except (ValueError, json.JSONDecodeError) as exc:
+    except CAUGHT as exc:
         row |= {"keep": False, "parse_error": str(exc)[:120]}
     return row
 
@@ -248,7 +282,7 @@ def generate_and_grade(lm: BaseLM, referee: BaseLM, cache: _CallCache, item: Lad
             "groundedness": float(parsed["groundedness"]),
             "equivalent": bool(parsed.get("equivalent")),
         }
-    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    except CAUGHT as exc:
         row |= {"parse_error": str(exc)[:120]}
     return row
 

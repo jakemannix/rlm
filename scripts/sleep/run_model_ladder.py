@@ -22,7 +22,13 @@ from pathlib import Path
 import requests
 
 from rlm.sleep.gold import _CallCache
-from rlm.sleep.model_ladder import OPENROUTER_BASE_URL, ModelResult, build_items, run_model
+from rlm.sleep.model_ladder import (
+    OPENROUTER_BASE_URL,
+    ModelResult,
+    build_items,
+    purge_invalid,
+    run_model,
+)
 
 # Picked from the LIVE OpenRouter catalog (2026-06) across the size
 # spectrum — never from training-data memory; validate() re-checks at
@@ -96,6 +102,9 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     cache = _CallCache(out / "ladder_cache.json")
+    purged = purge_invalid(cache)
+    if purged:
+        print(f"purged {purged} poisoned cache entries (empty/None responses)")
     referee = (
         OpenAIClient(model_name=referee_ids[0], base_url=OPENROUTER_BASE_URL)
         if referee_ids
