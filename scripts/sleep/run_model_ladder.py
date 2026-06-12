@@ -24,14 +24,19 @@ import requests
 from rlm.sleep.gold import _CallCache
 from rlm.sleep.model_ladder import OPENROUTER_BASE_URL, ModelResult, build_items, run_model
 
+# Picked from the LIVE OpenRouter catalog (2026-06) across the size
+# spectrum — never from training-data memory; validate() re-checks at
+# every launch. Claude rung is the ceiling anchor but carries a
+# self-family bias caveat (the gold references are Claude-authored).
 DEFAULT_MODELS = [
-    "qwen/qwen-2.5-7b-instruct",
-    "qwen/qwen2.5-32b-instruct",
-    "qwen/qwen-2.5-72b-instruct",
-    "meta-llama/llama-3.1-8b-instruct",
-    "meta-llama/llama-3.3-70b-instruct",
-    "openai/gpt-4o",
-    "anthropic/claude-sonnet-4.5",
+    "qwen/qwen3.5-9b",
+    "qwen/qwen3.6-27b",
+    "qwen/qwen3.6-35b-a3b",
+    "qwen/qwen3.5-122b-a10b",
+    "z-ai/glm-5.1",
+    "deepseek/deepseek-v4-flash",
+    "qwen/qwen3.7-max",
+    "anthropic/claude-sonnet-4.6",
 ]
 
 
@@ -59,8 +64,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--referee",
-        default="anthropic/claude-sonnet-4.5",
-        help="fixed grader for the generation task",
+        default="google/gemini-3.1-pro-preview",
+        help="fixed grader for the generation task (non-Claude by default: "
+        "the reference memories are Claude-authored)",
     )
     parser.add_argument("--tasks", default="classify,generate")
     parser.add_argument("--prep", default="runs/sleep/frontier_memories/prep.json")
@@ -99,9 +105,14 @@ def main() -> None:
     report: dict[str, dict] = {}
     for model_id in models:
         lm = OpenAIClient(model_name=model_id, base_url=OPENROUTER_BASE_URL)
-        result: ModelResult = run_model(
-            lm, items, cache, tasks=tasks, referee=referee, workers=args.workers
-        )
+        try:
+            result: ModelResult = run_model(
+                lm, items, cache, tasks=tasks, referee=referee, workers=args.workers
+            )
+        except Exception as exc:  # noqa: BLE001 - one rung must not kill the sweep
+            print(f"=== {model_id} FAILED: {str(exc)[:200]}")
+            report[model_id] = {"error": str(exc)[:300]}
+            continue
         entry = {}
         if "classify" in tasks:
             entry["classify"] = result.classify_metrics()

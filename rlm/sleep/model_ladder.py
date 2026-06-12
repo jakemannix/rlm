@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -185,8 +186,17 @@ class ModelResult:
         }
 
 
-def _completion(lm: BaseLM, cache: _CallCache, kind: str, prompt: str) -> str:
-    return cache.completions(lm, kind, prompt, 1)[0]
+def _completion(lm: BaseLM, cache: _CallCache, kind: str, prompt: str, retries: int = 3) -> str:
+    """Cached completion with backoff: provider 429s/400s on OpenRouter are
+    routine and must cost one cell, never the sweep."""
+    last: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return cache.completions(lm, kind, prompt, 1)[0]
+        except Exception as exc:  # noqa: BLE001 - provider errors are diverse
+            last = exc
+            time.sleep(2.0 * (attempt + 1))
+    raise ValueError(f"api_error after {retries} attempts: {str(last)[:160]}")
 
 
 def classify_item(lm: BaseLM, cache: _CallCache, item: LadderItem, condition: str) -> dict:
@@ -214,16 +224,16 @@ def classify_item(lm: BaseLM, cache: _CallCache, item: LadderItem, condition: st
 
 
 def generate_and_grade(lm: BaseLM, referee: BaseLM, cache: _CallCache, item: LadderItem) -> dict:
-    generated = _completion(
-        lm, cache, "generate", GENERATE_PROMPT.format(evidence=item.evidence)
-    ).strip()
     row = {
         "memory_id": item.memory_id,
         "frontier_tier": item.tier,
         "memory_type": item.memory_type,
-        "generated": generated[:1500],
     }
     try:
+        generated = _completion(
+            lm, cache, "generate", GENERATE_PROMPT.format(evidence=item.evidence)
+        ).strip()
+        row["generated"] = generated[:1500]
         parsed = extract_json(
             _completion(
                 referee,
