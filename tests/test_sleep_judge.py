@@ -184,6 +184,22 @@ def test_verify_greedy_decodes_then_restores_temperature():
     assert lm.temperature == 0.7
 
 
+def test_cache_misses_on_different_max_new_tokens(tmp_path):
+    """A longer generation budget changes reflection truncation -> new key."""
+    cache = tmp_path / "judge_cache.json"
+    ep = episode()
+    lm1 = MockLM(responses=[LEARN_RESPONSE, "VERDICT: YES"])
+    lm1.max_new_tokens = 768
+    ReflectionJudge(lm1, JudgeConfig(n_samples=1), cache_path=cache).reflect(ep)
+
+    lm2 = MockLM(responses=[LEARN_RESPONSE, "VERDICT: YES"])
+    lm2.max_new_tokens = 1024
+    judge2 = ReflectionJudge(lm2, JudgeConfig(n_samples=1), cache_path=cache)
+    judge2.reflect(ep)
+    assert judge2.cache_hits == 0
+    assert lm2._call_count == 2
+
+
 def test_cache_invalidated_by_verify_prompt_change(tmp_path, monkeypatch):
     """verified flags live inside cached outputs; a prompt edit must not reuse them."""
     import rlm.sleep.judge as judge_mod

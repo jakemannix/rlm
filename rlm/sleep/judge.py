@@ -126,6 +126,7 @@ class ReflectionJudge:
                 prompt,
                 self.lm.model_name,
                 str(getattr(self.lm, "temperature", None)),
+                str(getattr(self.lm, "max_new_tokens", None)),
                 str(cfg.n_samples),
                 str(cfg.min_confidence),
                 str(cfg.verify_examples),
