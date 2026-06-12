@@ -78,6 +78,13 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", default="~/Documents/cc-session-archive")
+    parser.add_argument(
+        "--source-format",
+        choices=["cc", "claude-export"],
+        default="cc",
+        help="cc = Claude Code transcript archive; claude-export = a claude.ai "
+        "data export directory (conversations.json)",
+    )
     parser.add_argument("--include-subagents", action="store_true")
     parser.add_argument(
         "--all-episodes",
@@ -110,7 +117,12 @@ def main() -> None:
     parser.add_argument("--out", default="runs/sleep/gold")
     args = parser.parse_args()
 
-    episodes = load_cc_episodes(args.source, include_subagents=args.include_subagents)
+    if args.source_format == "claude-export":
+        from rlm.sleep.claude_export import load_claude_export
+
+        episodes = load_claude_export(args.source)
+    else:
+        episodes = load_cc_episodes(args.source, include_subagents=args.include_subagents)
     if not args.all_episodes:
         episodes = [ep for ep in episodes if error_signal(ep) > 0]
     episodes.sort(key=error_signal, reverse=True)
