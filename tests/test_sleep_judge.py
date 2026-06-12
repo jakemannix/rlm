@@ -196,6 +196,8 @@ def test_parse_verdict_tolerates_markdown_decoration():
     assert not parse_verify_verdict("**Verdict:** NO")
     assert parse_verify_verdict("VERDICT - YES")
     assert parse_verify_verdict("**VERDICT: YES**")
+    assert parse_verify_verdict("**VERDICT:** **YES**")  # bolded label too
+    assert not parse_verify_verdict("**VERDICT**: **NO**")
     assert not parse_verify_verdict("the verdict hinges on yesterday")  # prose stays unmatched
 
 
