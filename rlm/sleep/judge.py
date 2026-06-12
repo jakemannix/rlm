@@ -91,7 +91,10 @@ or
 VERDICT: NO
 """
 
-VERDICT_RE = re.compile(r"VERDICT:\s*(YES|NO)", re.IGNORECASE)
+# \W{0,5} tolerates markdown decoration around the colon: small judges
+# routinely emit "**VERDICT:** YES" (observed at 1.5B on every refute call
+# of the first gold_v1 run — the strict colon form fail-closed every vote).
+VERDICT_RE = re.compile(r"VERDICT\W{0,5}(YES|NO)\b", re.IGNORECASE)
 
 
 def parse_verify_verdict(text: str) -> bool:

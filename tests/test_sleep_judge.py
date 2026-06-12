@@ -187,6 +187,18 @@ def test_parse_verify_verdict_variants():
     assert not parse_verify_verdict("VERDICT: YES\nWait, actually:\nVERDICT: NO")  # last wins
 
 
+def test_parse_verdict_tolerates_markdown_decoration():
+    """1.5B judges emit '**VERDICT:** YES' — observed on every refute call
+    of the first real labeling run."""
+    from rlm.sleep.judge import parse_verify_verdict
+
+    assert parse_verify_verdict("**VERDICT:** YES")
+    assert not parse_verify_verdict("**Verdict:** NO")
+    assert parse_verify_verdict("VERDICT - YES")
+    assert parse_verify_verdict("**VERDICT: YES**")
+    assert not parse_verify_verdict("the verdict hinges on yesterday")  # prose stays unmatched
+
+
 def test_verify_greedy_decodes_then_restores_temperature():
     """Sampling-capable judges are forced greedy for the verify call only."""
     from rlm.sleep.types import TrainingExample
