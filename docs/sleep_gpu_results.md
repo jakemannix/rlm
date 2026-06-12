@@ -137,9 +137,36 @@ Two findings:
    pull the model away from that style. Whether any (lr, rank, replay)
    region escapes this is exactly the G3 question.
 
-## G3 — sweep
+## G3 — sweep (db, 36 points, judge fully cached)
 
-*(pending)*
+Grid: `adapter.lr ∈ {5e-5, 1e-4, 2e-4, 5e-4}` × `rank ∈ {8, 16, 32}` ×
+`replay_ratio ∈ {0, 0.2, 0.4}`, one verified night each, same day of
+episodes, judge cache pre-seeded from G2 (**zero judge calls for all 36
+points**). ~45 s/point, ~27 min total — the original "3–6 GPU-h" estimate
+was ~8× conservative. Data: `docs/data/g3_sweep_db_1.5b.csv`; scatter:
+`docs/figures/g3_sweep_db_scatter.png`.
+
+**Answer to the G3 question: no.** No (lr, rank, replay) region achieves
+`next_day_delta < 0` beyond noise on db:
+
+- **lr dominates everything else.** 5e-5: deltas within ±0.0006 (the
+  adapter barely moves the model). 1e-4: ≈ +0.002. 2e-4: ≈ +0.01.
+  5e-4: ≈ +0.05. Monotonic damage; rank is second-order at best.
+- The "best" point (lr=5e-5, rank=16, replay=0.4: −0.0005 next-day,
+  −0.0006 test) is indistinguishable from not training.
+- **The retention probe failed its own test**: retention deltas are
+  *negative everywhere* (≈0 to −0.03) and grow more negative with
+  replay_ratio and lr — replay examples resemble the probe items, so
+  training on them *improves* the probe. `replay_ratio=0` does not
+  measurably hurt retention at any lr. Per the plan: the probe needs
+  harder items (append a v2; damage currently shows on test NLL, not
+  retention).
+
+Per the kill criteria this triggers the domain check, not a verdict on
+the loop: db base NLL (0.166) confirms the gold responses are formulaic
+enough that a 1.5B base has nothing to learn from re-distilled versions
+of them. Next: one night on **alfworld** (the domain with the richest
+failure signal: 29/336 heuristic-gate selections vs ~0 elsewhere).
 
 ## G4 — multi-night curves
 
