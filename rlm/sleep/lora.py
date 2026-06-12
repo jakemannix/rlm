@@ -45,12 +45,18 @@ def encode_example(
     prompt_text = tokenizer.apply_chat_template(
         messages[:-1], tokenize=False, add_generation_prompt=True
     )
-    full_text = prompt_text + messages[-1]["content"] + tokenizer.eos_token
     prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
-    full_ids = tokenizer(full_text, add_special_tokens=False)["input_ids"][:max_seq_len]
-    n_prompt = min(len(prompt_ids), len(full_ids))
-    labels = [-100] * n_prompt + full_ids[n_prompt:]
-    return full_ids, labels
+    response_ids = tokenizer(
+        messages[-1]["content"] + tokenizer.eos_token, add_special_tokens=False
+    )["input_ids"]
+    # The response carries ALL the supervision: right-truncating the joint
+    # sequence silently produced all-masked (-100) examples and NaN losses
+    # on long prompts. Cap the response at half the window, then keep the
+    # prompt's TAIL (mirrors the response_nll truncation fix in evals.py).
+    response_ids = response_ids[: max(1, max_seq_len // 2)]
+    prompt_ids = prompt_ids[-(max_seq_len - len(response_ids)) :]
+    labels = [-100] * len(prompt_ids) + response_ids
+    return prompt_ids + response_ids, labels
 
 
 def train_lora(
