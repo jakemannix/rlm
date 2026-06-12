@@ -31,6 +31,7 @@ def main() -> None:
         sys.path.insert(0, str(REPO_ROOT))
     from scripts.sleep.common import (
         add_common_args,
+        apply_judge_overrides,
         build_judge,
         fake_eval_fn,
         fake_train_fn,
@@ -56,6 +57,7 @@ def main() -> None:
         episodes_per_day=args.episodes_per_day,
     )
     config.gate.use_surprise = args.use_surprise
+    apply_judge_overrides(config, args)
     kwargs = {"train_fn": fake_train_fn, "eval_fn": fake_eval_fn} if args.dry_run else {}
     csv_path = run_sweep(
         grid=json.loads(args.grid),

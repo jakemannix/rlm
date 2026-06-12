@@ -78,10 +78,14 @@ def test_run_night_end_to_end(tmp_path):
     assert result.adapter_dir is not None
     assert result.base_report.next_day_nll == 2.0
     assert result.adapted_report.next_day_nll == 1.5
+    assert set(result.stage_seconds) == {"gate", "judge", "train", "eval"}
+    assert all(v >= 0 for v in result.stage_seconds.values())
 
     # All artifacts persisted.
     for name in ["gate_decisions.json", "judge_outputs.json", "sft_data.jsonl", "day_result.json"]:
         assert (tmp_path / "day_0" / name).exists(), name
+    persisted = json.loads((tmp_path / "day_0" / "day_result.json").read_text())
+    assert set(persisted["stage_seconds"]) == {"gate", "judge", "train", "eval"}
 
 
 def test_run_night_quiet_day_trains_nothing(tmp_path):
@@ -102,6 +106,7 @@ def test_run_night_quiet_day_trains_nothing(tmp_path):
     assert result.n_examples == 0
     assert result.adapter_dir is None
     assert result.base_report is None
+    assert set(result.stage_seconds) == {"gate", "judge"}  # never reached train/eval
 
 
 def test_run_night_includes_extra_examples(tmp_path):

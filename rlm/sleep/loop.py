@@ -8,6 +8,7 @@ and tests inject lightweight fakes — one code path either way.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -114,6 +115,15 @@ def run_night(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    stage_start = time.perf_counter()
+    stage_seconds: dict[str, float] = {}
+
+    def mark(stage: str) -> None:
+        nonlocal stage_start
+        now = time.perf_counter()
+        stage_seconds[stage] = round(now - stage_start, 2)
+        stage_start = now
+
     # Stage 1 — cheap gate over the day's episodes.
     if surprise_gate is None and config.gate.use_surprise:
         surprise_gate = build_surprise_gate(config, judge_lm)
@@ -123,11 +133,13 @@ def run_night(
     (out_dir / "gate_decisions.json").write_text(
         json.dumps([asdict(d) for d in decisions], indent=2)
     )
+    mark("gate")
 
     # Stage 2 — expensive reflection on the gated subset (cached when asked).
     judge = ReflectionJudge(judge_lm, config.judge, cache_path=judge_cache_path)
     outputs = judge.reflect_all(selected)
     (out_dir / "judge_outputs.json").write_text(json.dumps([asdict(o) for o in outputs], indent=2))
+    mark("judge")
 
     # Stage 3 — verified examples + replay -> SFT set (with leakage guard).
     night_examples = collect_examples(outputs)
@@ -148,14 +160,17 @@ def run_night(
             adapter_dir=None,
             base_report=None,
             adapted_report=None,
+            stage_seconds=stage_seconds,
         )
         (out_dir / "day_result.json").write_text(json.dumps(result.to_dict(), indent=2))
         return result
 
     # Stage 4 — train tonight's adapter; Stage 5 — evaluate base vs adapted.
     adapter_dir = train_fn(examples, config, out_dir)
+    mark("train")
     base_report = eval_fn(config, None, next_day_episodes, test_episodes)
     adapted_report = eval_fn(config, adapter_dir, next_day_episodes, test_episodes)
+    mark("eval")
 
     result = DayResult(
         day_index=day_index,
@@ -166,6 +181,7 @@ def run_night(
         adapter_dir=str(adapter_dir),
         base_report=base_report,
         adapted_report=adapted_report,
+        stage_seconds=stage_seconds,
     )
     (out_dir / "day_result.json").write_text(json.dumps(result.to_dict(), indent=2))
     return result

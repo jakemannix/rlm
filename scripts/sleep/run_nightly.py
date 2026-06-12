@@ -33,7 +33,9 @@ def main() -> None:
         sys.path.insert(0, str(REPO_ROOT))
     from scripts.sleep.common import (
         add_common_args,
+        apply_judge_overrides,
         build_judge,
+        dump_judge_usage,
         fake_eval_fn,
         fake_train_fn,
         load_episodes,
@@ -47,6 +49,14 @@ def main() -> None:
         action="store_true",
         help="re-distill baseline: night N trains from base on the union of "
         "all nights' verified examples so far (vs. independent nightly adapters)",
+    )
+    parser.add_argument(
+        "--win-rate",
+        type=int,
+        default=0,
+        metavar="N",
+        help="after the last night, blind pairwise win-rate (adapted vs base) "
+        "on N next-day prompts (0 = off; ignored under --dry-run)",
     )
     parser.add_argument("--out", default="runs/sleep/nightly")
     args = parser.parse_args()
@@ -68,10 +78,12 @@ def main() -> None:
         episodes_per_day=args.episodes_per_day,
     )
     config.gate.use_surprise = args.use_surprise
+    apply_judge_overrides(config, args)
     judge_lm = build_judge(args, config.judge)
     kwargs = {"train_fn": fake_train_fn, "eval_fn": fake_eval_fn} if args.dry_run else {}
 
     accumulated: list = []
+    last_result = None
     for day in range(args.days):
         day_dir = Path(args.out) / f"day_{day:03d}"
         result = run_night(
@@ -92,10 +104,16 @@ def main() -> None:
             # the latter would double-count prior nights.
             outputs = json.loads((day_dir / "judge_outputs.json").read_text())
             accumulated.extend(collect_examples([output_from_dict(o) for o in outputs]))
+        last_result = result
         print(
             f"[day {day}] episodes={result.n_episodes} gated={result.n_selected} "
             f"learn={result.n_learn_verdicts} examples={result.n_examples}"
         )
+        if result.stage_seconds:
+            print(
+                "        stage seconds: "
+                + " | ".join(f"{k} {v:.1f}" for k, v in result.stage_seconds.items())
+            )
         if result.adapted_report is not None:
             base, adapted = result.base_report, result.adapted_report
             print(
@@ -103,6 +121,39 @@ def main() -> None:
                 f"test NLL {base.test_nll:.4f} -> {adapted.test_nll:.4f} | "
                 f"retention NLL {base.retention_nll:.4f} -> {adapted.retention_nll:.4f}"
             )
+
+    if args.win_rate and not args.dry_run:
+        if last_result is None or last_result.adapter_dir is None:
+            print("win-rate: skipped (no adapter trained on the final night)")
+        else:
+            from rlm.sleep.lora import load_adapter, load_policy
+            from rlm.sleep.winrate import generate_pairs, judged_win_rate
+
+            prompts = days[args.days][: args.win_rate]
+            base_model, tokenizer = load_policy(
+                config.policy_model, device=config.device, torch_dtype=config.torch_dtype
+            )
+            base_model.eval()
+            adapted_model, _ = load_adapter(
+                config.policy_model,
+                last_result.adapter_dir,
+                device=config.device,
+                torch_dtype=config.torch_dtype,
+            )
+            pairs = generate_pairs(base_model, adapted_model, tokenizer, prompts, config.device)
+            report = judged_win_rate(judge_lm, pairs, seed=config.adapter.seed)
+            (Path(args.out) / "win_rate.json").write_text(json.dumps(report.to_dict(), indent=2))
+            print(
+                f"win-rate (adapted vs base, n={report.n}): {report.win_rate:.3f} "
+                f"[{report.wins}W/{report.losses}L/{report.ties}T]"
+            )
+
+    usage = dump_judge_usage(judge_lm, Path(args.out) / "judge_usage.json")
+    for model_name, model_usage in usage.items():
+        print(
+            f"judge usage [{model_name}]: {model_usage['total_calls']} calls, "
+            f"{model_usage['total_input_tokens']} in / {model_usage['total_output_tokens']} out tokens"
+        )
 
 
 if __name__ == "__main__":

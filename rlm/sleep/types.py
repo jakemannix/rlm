@@ -133,6 +133,7 @@ class DayResult:
     adapter_dir: str | None
     base_report: EvalReport | None
     adapted_report: EvalReport | None
+    stage_seconds: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

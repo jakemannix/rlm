@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from rlm.clients.base_lm import BaseLM
-from rlm.sleep.config import JudgeConfig
+from rlm.sleep.config import JudgeConfig, SleepConfig
 from rlm.sleep.traces import load_hf_traces, synthetic_traces
 from rlm.sleep.types import Episode, EvalReport, TrainingExample
 
@@ -54,8 +54,28 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         "clean expert traces, where failure heuristics rarely fire)",
     )
     parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=None,
+        help="judge self-consistency samples per episode (default: JudgeConfig.n_samples)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="skip LoRA training + NLL evals (no torch)"
     )
+
+
+def apply_judge_overrides(config: SleepConfig, args: argparse.Namespace) -> None:
+    """Fold optional CLI judge knobs into the config (None = keep the default)."""
+    if args.n_samples is not None:
+        config.judge.n_samples = args.n_samples
+
+
+def dump_judge_usage(judge_lm: BaseLM, out_path: Path) -> dict:
+    """Persist the judge's token usage next to the run artifacts."""
+    summary = judge_lm.get_usage_summary()
+    data = {name: usage.to_dict() for name, usage in summary.model_usage_summaries.items()}
+    out_path.write_text(json.dumps(data, indent=2))
+    return data
 
 
 def load_episodes(args: argparse.Namespace) -> list[Episode]:
