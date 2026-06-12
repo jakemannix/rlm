@@ -55,21 +55,37 @@ EPISODE:
 
 VERIFY_PROMPT = """\
 You are reviewing one candidate training example before it is used to \
-fine-tune a model. Your default is suspicion: a bad example that slips \
-through damages the model, while a rejected good example costs little.
+fine-tune a model. Reject examples with real problems; approve good ones — \
+both kinds of mistake hurt.
+
+Check the RESPONSE for: factual or technical errors; harmful effects \
+(destructive commands, data loss); failure to actually answer the PROMPT \
+(e.g. narration like "the query ran successfully" instead of an answer); \
+inconsistency with the LESSON.
+
+Two reference reviews:
+
+LESSON: Quote filenames that contain spaces in shell commands.
+PROMPT: How do I remove a file called "old notes.txt"?
+RESPONSE: Run `rm old notes.txt` — quoting is optional for rm.
+REVIEW: Wrong and destructive: unquoted, this deletes the wrong targets; \
+it also contradicts the lesson.
+VERDICT: NO
+
+LESSON: Use head to preview large files instead of opening them whole.
+PROMPT: How can I see the first lines of a huge log file?
+RESPONSE: Use `head -n 20 logfile.log` to print the first 20 lines.
+REVIEW: Correct, safe, answers the prompt, applies the lesson.
+VERDICT: YES
+
+Now review this example:
 
 LESSON: {lesson}
 PROMPT: {prompt}
 RESPONSE: {response}
 
-Check, in order:
-1. Is the response factually and technically correct?
-2. Would following it cause harm (destructive commands, data loss, security risks)?
-3. Does it actually answer the prompt?
-4. Is it consistent with the lesson?
-
-State any problems you find in one or two short sentences, then give your \
-verdict on the last line in exactly this form:
+Give your review in one short sentence, then your verdict on the last \
+line in exactly this form:
 VERDICT: YES
 or
 VERDICT: NO
