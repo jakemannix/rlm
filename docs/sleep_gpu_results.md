@@ -168,6 +168,27 @@ enough that a 1.5B base has nothing to learn from re-distilled versions
 of them. Next: one night on **alfworld** (the domain with the richest
 failure signal: 29/336 heuristic-gate selections vs ~0 elsewhere).
 
+## Domain check: one alfworld night (64-episode day, n_samples=3, --use-surprise)
+
+The kill-criteria follow-up to G3. alfworld: 9/64 gated (the score floor
+binds, not the budget — failure signal is real but sparse), 9/9 learn,
+10 verified examples; judge 41 calls, 277 s; night ≈ 5.3 min.
+
+| | base | adapted | delta |
+|---|---|---|---|
+| next-day NLL | 0.0921 | 0.0896 | **−0.0025** |
+| test NLL | 0.0474 | 0.0466 | **−0.0008** |
+| retention NLL | 2.1002 | 2.0967 | −0.0035 |
+
+The same default lr=2e-4 that cost db +0.012 next-day **improved**
+alfworld — the first night with all three deltas negative. Honest
+context: alfworld base NLLs are even lower than db's (0.047 test), so
+the magnitudes are small; the broader picture is that 1.5B already
+models AgentInstruct expert responses extremely well everywhere (every
+domain's base NLL ≤ 0.2 nats vs 2.1 on general text). Within that
+ceiling, alfworld is the domain where consolidation has signal, so G4
+runs there.
+
 ## G4 — multi-night curves
 
 *(pending)*
