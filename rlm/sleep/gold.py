@@ -71,11 +71,13 @@ Respond with ONLY a JSON object:
 """
 
 REFUTE_PROMPT = """\
-You are the last gate before a training example is written into a model's \
-weights. Try to refute it: find a concrete reason it teaches something \
-wrong, useless, or confusing. If your strongest objection is a real flaw, \
-reject it. If you cannot find a real flaw, keep it — rejecting good \
-examples also hurts the model.
+You are reviewing one candidate training example. First find the strongest \
+objection you can. Then judge the objection itself: is it a REAL flaw — \
+the example teaches something wrong, harmful, or content-free — or is it \
+a nitpick that could be raised against almost any example ("could be more \
+detailed", "lacks concrete examples", "may not generalize to every case")? \
+Reject only for real flaws: a reasonable example should survive its \
+strongest objection.
 
 Two reference reviews:
 
@@ -83,12 +85,14 @@ LESSON: Always be careful when running commands.
 PROMPT: How should I run commands?
 RESPONSE: Carefully, thinking about what could go wrong.
 OBJECTION: Content-free platitude — nothing here changes any future action.
+JUDGMENT: Real flaw; there is nothing to learn from this example.
 VERDICT: NO
 
 LESSON: git push --force-with-lease refuses to clobber commits you haven't seen.
 PROMPT: I need to force-push my rebased branch but a teammate may have pushed too.
 RESPONSE: Use `git push --force-with-lease` — it fails if the remote moved since your last fetch, unlike `--force`.
-OBJECTION: None that holds; the distinction is real and the advice is safe.
+OBJECTION: It could say more about what to do after the push is refused.
+JUDGMENT: Nitpick — the advice is correct, safe, and complete enough to act on.
 VERDICT: YES
 
 Now review this candidate:
@@ -97,8 +101,8 @@ LESSON: {lesson}
 PROMPT: {prompt}
 RESPONSE: {response}
 
-State your strongest objection in one sentence, then give your verdict on \
-the last line in exactly this form:
+Give your objection and judgment in at most two sentences each, then your \
+verdict on the last line in exactly this form:
 VERDICT: YES
 or
 VERDICT: NO
