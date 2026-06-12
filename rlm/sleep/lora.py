@@ -139,6 +139,18 @@ def train_lora(
         "adapter_config": config.__dict__ | {"target_modules": list(config.target_modules)},
     }
     (out_dir / "training_meta.json").write_text(json.dumps(meta, indent=2))
+
+    # Release the model eagerly: sequential multi-night training otherwise
+    # accumulates dead models/optimizers until the accelerator OOMs (MPS
+    # holds allocations until empty_cache).
+    import gc
+
+    del model, optimizer, scheduler
+    gc.collect()
+    if device.startswith("mps") and hasattr(torch.mps, "empty_cache"):
+        torch.mps.empty_cache()
+    elif device.startswith("cuda"):
+        torch.cuda.empty_cache()
     return out_dir
 
 

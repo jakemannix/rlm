@@ -25,6 +25,7 @@ import hashlib
 import json
 import re
 import statistics
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -145,12 +146,14 @@ def parse_refute_verdict(text: str) -> bool | None:
 
 
 class _CallCache:
-    """Disk cache for rubric/refute generations: reruns and crash-resumes
-    must not re-spend the most expensive stage."""
+    """Disk cache for judge generations: reruns and crash-resumes must not
+    re-spend the most expensive stage. Thread-safe; LM calls happen outside
+    the lock so concurrent callers on distinct keys still parallelize."""
 
     def __init__(self, path: str | Path | None):
         self.path = Path(path) if path is not None else None
         self._data: dict[str, list[str]] = {}
+        self._lock = threading.Lock()
         if self.path is not None and self.path.exists():
             self._data = json.loads(self.path.read_text(encoding="utf-8"))
 
@@ -159,12 +162,17 @@ class _CallCache:
             [kind, prompt, str(n), judge_lm.model_name, str(getattr(judge_lm, "temperature", None))]
         )
         key = hashlib.sha256(ident.encode("utf-8")).hexdigest()
-        if key not in self._data or len(self._data[key]) < n:
-            self._data[key] = [judge_lm.completion(prompt) for _ in range(n)]
+        with self._lock:
+            cached = self._data.get(key)
+            if cached is not None and len(cached) >= n:
+                return cached[:n]
+        responses = [judge_lm.completion(prompt) for _ in range(n)]
+        with self._lock:
+            self._data[key] = responses
             if self.path is not None:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 self.path.write_text(json.dumps(self._data), encoding="utf-8")
-        return self._data[key][:n]
+        return responses[:n]
 
 
 @dataclass

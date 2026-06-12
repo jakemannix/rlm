@@ -81,7 +81,10 @@ def main() -> None:
     parser.add_argument("--cumulative", action="store_true")
     parser.add_argument("--max-nights", type=int, default=None)
     parser.add_argument("--probe-limit", type=int, default=None)
-    parser.add_argument("--max-seq-len", type=int, default=4096)
+    parser.add_argument("--max-seq-len", type=int, default=2048)
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="micro-batch; MPS attention memory scales hard with batch x seq")
+    parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument(
@@ -104,7 +107,13 @@ def main() -> None:
     if not args.skip_training:
         from rlm.sleep.lora import train_lora
 
-        config = AdapterConfig(lr=args.lr, epochs=args.epochs, max_seq_len=args.max_seq_len)
+        config = AdapterConfig(
+            lr=args.lr,
+            epochs=args.epochs,
+            max_seq_len=args.max_seq_len,
+            batch_size=args.batch_size,
+            grad_accum=args.grad_accum,
+        )
         accumulated: list[TrainingExample] = []
         for i, day_file in enumerate(day_files):
             rows = [json.loads(line) for line in day_file.open()]
