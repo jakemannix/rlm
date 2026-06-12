@@ -137,10 +137,79 @@ def test_all_rubric_samples_unparseable_rejects():
     assert result.n_rubric_failures == 3
 
 
-def test_refute_parses_fail_closed():
+def test_refute_parses_fail_closed_and_counts_failures():
     lm = MockLM(responses=["I have thoughts but no verdict", "VERDICT: YES", "VERDICT: YES"])
-    keep, total = refute(lm, example(), GoldConfig())
-    assert (keep, total) == (2, 3)
+    keep, total, failures = refute(lm, example(), GoldConfig())
+    assert (keep, total, failures) == (2, 3, 1)
+
+
+def test_refute_template_echo_does_not_count_as_reject():
+    """A judge that echoes the prompt's format spec (which ends 'VERDICT: NO')
+    before answering must be judged on its OWN final line."""
+    from rlm.sleep.gold import parse_refute_verdict
+
+    echo_then_answer = "VERDICT: YES\nor\nVERDICT: NO\n\nNo real flaw.\nVERDICT: YES"
+    assert parse_refute_verdict(echo_then_answer) is True
+    pure_echo = "VERDICT: YES\nor\nVERDICT: NO"
+    assert parse_refute_verdict(pure_echo) is False  # template's last line, fails closed
+    assert parse_refute_verdict("rambling with no verdict") is None
+    assert parse_refute_verdict("") is None
+
+
+def test_fatal_flaw_placeholders_not_counted():
+    """Small judges write 'None'/'N/A' instead of an empty string."""
+    lm = MockLM(
+        responses=[
+            rubric_json(5, "None"),
+            rubric_json(5, "no fatal flaw."),
+            rubric_json(5, "N/A"),
+            "VERDICT: YES",
+            "VERDICT: YES",
+            "VERDICT: YES",
+        ]
+    )
+    result = label_example(lm, episode(), example(), GoldConfig())
+    assert result.fatal_flaws == []
+    assert result.label == "gold"
+
+
+def test_single_parsed_rubric_sample_cannot_mint_gold():
+    lm = MockLM(
+        responses=[
+            "garbage",
+            "also garbage",
+            rubric_json(5),
+            "VERDICT: YES",
+            "VERDICT: YES",
+            "VERDICT: YES",
+        ]
+    )
+    result = label_example(lm, episode(), example(), GoldConfig())
+    assert result.n_rubric_failures == 2
+    assert result.label == "silver"  # high score, but uncorroborated
+
+
+def test_gold_cache_second_run_makes_zero_calls(tmp_path):
+    from rlm.sleep.gold import _CallCache
+
+    cache_file = tmp_path / "gold_cache.json"
+    lm1 = MockLM(
+        responses=[
+            rubric_json(5),
+            rubric_json(5),
+            rubric_json(5),
+            "VERDICT: YES",
+            "VERDICT: YES",
+            "VERDICT: YES",
+        ]
+    )
+    first = label_example(lm1, episode(), example(), GoldConfig(), cache=_CallCache(cache_file))
+    assert first.label == "gold" and lm1._call_count == 6
+
+    lm2 = MockLM(responses=[])  # any call would raise
+    second = label_example(lm2, episode(), example(), GoldConfig(), cache=_CallCache(cache_file))
+    assert second.label == "gold"
+    assert lm2._call_count == 0
 
 
 def test_label_episodes_end_to_end_and_summary():

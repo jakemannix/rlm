@@ -165,6 +165,101 @@ def test_unresolved_error_is_failure(tmp_path):
     assert ep.outcome == "failure"
 
 
+def test_interrupt_marker_is_correction_signal_not_task(tmp_path):
+    records = [
+        rec("user", "Refactor the loader"),
+        rec(
+            "assistant",
+            [{"type": "text", "text": "Starting."}, tool_use("t1", "Bash", command="x")],
+        ),
+        rec("user", [tool_result("t1", "running...")]),
+        rec("user", "[Request interrupted by user]"),
+        rec("user", "no, leave the public API alone, just fix the internals"),
+        rec("assistant", [{"type": "text", "text": "Understood, internals only."}]),
+    ]
+    episodes = load_cc_session(write_session(tmp_path, records), min_steps=2)
+    assert len(episodes) == 1  # the interrupt did NOT start a junk episode
+    ep = episodes[0]
+    assert ep.task == "Refactor the loader"
+    assert ep.meta["n_user_corrections"] == 2  # interrupt + explicit correction
+
+
+def test_continuation_summary_is_not_a_task(tmp_path):
+    records = [
+        rec("user", "This session is being continued from a previous conversation that ran out"),
+        rec("assistant", [{"type": "text", "text": "orphan"}]),
+        rec("user", "Real task here"),
+        rec(
+            "assistant", [{"type": "text", "text": "On it."}, tool_use("t1", "Bash", command="ls")]
+        ),
+        rec("user", [tool_result("t1", "ok")]),
+    ]
+    episodes = load_cc_session(write_session(tmp_path, records), min_steps=2)
+    assert [e.task for e in episodes] == ["Real task here"]
+
+
+def test_no_problem_opener_starts_new_episode(tmp_path):
+    records = [
+        rec("user", "First task"),
+        rec("assistant", [{"type": "text", "text": "Done."}, tool_use("t1", "Bash", command="a")]),
+        rec("user", [tool_result("t1", "ok")]),
+        rec("user", "No problem, next please look at the README"),
+        rec(
+            "assistant", [{"type": "text", "text": "Looking."}, tool_use("t2", "Bash", command="b")]
+        ),
+        rec("user", [tool_result("t2", "ok")]),
+    ]
+    episodes = load_cc_session(write_session(tmp_path, records), min_steps=2)
+    assert len(episodes) == 2
+    assert episodes[1].task.startswith("No problem")
+
+
+def test_env_var_assignment_and_url_creds_redacted():
+    assert "OPENAI_API_KEY=[REDACTED]" in redact_secrets(
+        "export OPENAI_API_KEY=abc123def456ghi789jkl"
+    )
+    assert "[REDACTED]" in redact_secrets(
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----"
+    )
+    assert redact_secrets("https://user:hunter22@host.com/x") == "https://[REDACTED]@host.com/x"
+    out = redact_secrets("GET https://api.example.com/v1?access_token=abcd1234efgh&x=1")
+    assert "abcd1234efgh" not in out and "access_token=[REDACTED]" in out
+    # prose survives: no assignment separator
+    assert redact_secrets("the password requirements documentation") == (
+        "the password requirements documentation"
+    )
+
+
+def test_soft_error_regex_directions():
+    from rlm.sleep.cc_traces import SOFT_ERROR_RE
+
+    assert SOFT_ERROR_RE.search("Error: Cannot find module 'foo'")
+    assert SOFT_ERROR_RE.search("ValueError: invalid literal for int()")
+    assert SOFT_ERROR_RE.search("main.c:10: error: expected ';'")
+    assert not SOFT_ERROR_RE.search("src/log.py:12: logger.error: retry handling")
+    assert not SOFT_ERROR_RE.search("All checks passed and nothing else")
+
+
+def test_non_dict_jsonl_lines_do_not_crash(tmp_path):
+    path = tmp_path / "p" / "s.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '["a json array"]\n42\n{"type": "user", "message": "not a dict"}\n'
+        + json.dumps(rec("user", "Task"))
+        + "\n"
+        + json.dumps(
+            rec(
+                "assistant",
+                [{"type": "text", "text": "Done it."}, tool_use("t1", "Bash", command="ls")],
+            )
+        )
+        + "\n"
+        + json.dumps(rec("user", [tool_result("t1", "ok")]))
+    )
+    episodes = load_cc_session(path, min_steps=2)
+    assert len(episodes) == 1 and episodes[0].task == "Task"
+
+
 def test_long_step_truncation_keeps_tail(tmp_path):
     records = [
         rec("user", "Big output"),

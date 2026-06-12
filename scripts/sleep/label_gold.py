@@ -102,6 +102,11 @@ def main() -> None:
         action="store_true",
         help="include silver-labeled examples in sft_gold.jsonl",
     )
+    parser.add_argument(
+        "--allow-external-judge",
+        action="store_true",
+        help="required to use a non-'self' judge: ships transcript-derived text to an external API",
+    )
     parser.add_argument("--out", default="runs/sleep/gold")
     args = parser.parse_args()
 
@@ -118,6 +123,12 @@ def main() -> None:
     if args.mock_judge:
         judge_lm = build_mock_judge()
     else:
+        if args.judge_model != "self" and not args.allow_external_judge:
+            raise SystemExit(
+                "Refusing to send personal transcripts to an external judge "
+                f"({args.judge_model!r}). Redaction is best-effort, not a guarantee. "
+                "Pass --allow-external-judge if you have reviewed the episodes."
+            )
         from scripts.sleep.common import build_judge
 
         judge_lm = build_judge(args, judge_config)
@@ -130,6 +141,7 @@ def main() -> None:
         judge_config=judge_config,
         gold_config=gold_config,
         cache_path=out_dir / "judge_cache.json",
+        gold_cache_path=out_dir / "gold_cache.json",
     )
 
     with (out_dir / "gold_labels.jsonl").open("w", encoding="utf-8") as f:

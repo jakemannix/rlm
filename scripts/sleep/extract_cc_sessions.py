@@ -46,7 +46,12 @@ def extract(source: Path, dest: Path) -> dict:
         rel = str(src.relative_to(source))
         st = src.stat()
         entry = manifest.get(rel)
-        if entry and entry["size"] == st.st_size and entry["mtime"] == st.st_mtime:
+        if (
+            entry
+            and entry["size"] == st.st_size
+            and entry["mtime"] == st.st_mtime
+            and (dest / rel).exists()
+        ):
             stats["skipped"] += 1
             continue
         target = dest / rel
@@ -62,7 +67,10 @@ def extract(source: Path, dest: Path) -> dict:
         stats["copied"] += 1
         stats["bytes_copied"] += st.st_size
 
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    # Atomic write: a crash mid-dump must not brick every future run.
+    tmp = manifest_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    tmp.replace(manifest_path)
     stats["total_in_manifest"] = len(manifest)
     return stats
 

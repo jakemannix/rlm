@@ -103,18 +103,42 @@ def parse_verify_verdict(text: str) -> bool:
 JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _balanced_objects(text: str) -> list[str]:
+    """Every balanced top-level {...} span in the text, in order."""
+    spans, depth, start = [], 0, -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0:
+                spans.append(text[start : i + 1])
+    return spans
+
+
 def extract_json(text: str) -> dict:
-    """Parse the first JSON object found in an LM response."""
+    """Parse a JSON object from an LM response.
+
+    Tries the greedy first-to-last-brace span, then each balanced object
+    LAST-first (a judge echoing the prompt's JSON template emits the
+    unparseable skeleton before its real answer), with a salvage pass for
+    \\' — an invalid JSON escape judges emit when writing SQL inside JSON
+    strings (measured at 3/48 samples on AgentInstruct/db).
+    """
     match = JSON_BLOCK.search(text)
     if match is None:
         raise ValueError(f"No JSON object in judge response: {text[:200]!r}")
-    block = match.group(0)
-    try:
-        return json.loads(block)
-    except json.JSONDecodeError:
-        # Judges writing SQL inside JSON strings emit \' — an invalid JSON
-        # escape (measured at 3/48 samples on AgentInstruct/db). Salvage it.
-        return json.loads(block.replace("\\'", "'"))
+    for block in [match.group(0)] + _balanced_objects(text)[::-1]:
+        for candidate in (block, block.replace("\\'", "'")):
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    raise ValueError(f"No parseable JSON object in judge response: {text[:200]!r}")
 
 
 def output_from_dict(record: dict) -> JudgeOutput:

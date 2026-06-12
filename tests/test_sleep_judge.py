@@ -41,6 +41,15 @@ def test_extract_json_raises_without_json():
         extract_json("no json here")
 
 
+def test_extract_json_survives_template_echo():
+    """A judge echoing the prompt's unparseable JSON skeleton before its real
+    answer must still parse — the real (last) balanced object wins."""
+    skeleton = '{"scores": {"correctness": n, "reusability": n}, "fatal_flaw": ""}'
+    real = '{"scores": {"correctness": 4, "reusability": 5}, "fatal_flaw": ""}'
+    parsed = extract_json(f"{skeleton}\n{real}")
+    assert parsed["scores"]["correctness"] == 4
+
+
 def test_extract_json_salvages_sql_quote_escapes():
     """LLMs writing SQL inside JSON emit \\' (invalid JSON); we recover it."""
     text = (

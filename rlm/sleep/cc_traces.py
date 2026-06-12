@@ -30,12 +30,20 @@ from typing import Any
 from rlm.sleep.types import Episode, Step
 
 # Human turns matching this continue the open episode rather than starting
-# a fresh one: a correction is part of the same task's arc.
+# a fresh one: a correction is part of the same task's arc. "no problem" /
+# "no worries"-style openers are exempted — they start new tasks.
 CORRECTION_RE = re.compile(
-    r"^\s*(no\b|wrong\b|that'?s (not|wrong)|actually\b|instead\b|stop\b|undo\b|revert\b"
+    r"^\s*(no\b(?!\s+(problem|worries|rush|need|thanks))|wrong\b|that'?s (not|wrong)"
+    r"|actually\b|instead\b|stop\b|undo\b|revert\b"
     r"|not what|didn'?t work|still (fails|failing|broken|wrong))",
     re.IGNORECASE,
 )
+
+# Harness-generated user turns that are neither a task nor a correction:
+# Esc-interrupts and compaction-continuation summaries. The interrupt is
+# itself weak correction signal (the human stopped a bad trajectory).
+INTERRUPT_RE = re.compile(r"^\[Request interrupted by user( for tool use)?\]$")
+CONTINUATION_RE = re.compile(r"^This session is being continued from a previous", re.IGNORECASE)
 
 # Harness-injected spans inside user content that are not the human speaking.
 META_SPAN_RE = re.compile(
@@ -45,36 +53,54 @@ META_SPAN_RE = re.compile(
     r"|<command-name>.*?</command-name>"
     r"|<command-message>.*?</command-message>"
     r"|<command-args>.*?</command-args>"
-    r"|<task-notification>.*?</task-notification>",
+    r"|<task-notification>.*?</task-notification>"
+    r"|<bash-input>.*?</bash-input>"
+    r"|<bash-stdout>.*?</bash-stdout>"
+    r"|<bash-stderr>.*?</bash-stderr>",
     re.DOTALL,
 )
 
 SECRET_RES = [
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
     re.compile(r"\b(sk|pk)-[A-Za-z0-9_-]{20,}"),
     re.compile(r"\b(ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{20,}"),
-    re.compile(
-        r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b(["
-        r"'\":=\s]+)([A-Za-z0-9._~+/-]{16,})"
-    ),
 ]
+# URL credentials: keep the URL shape, drop the secret part.
+URL_BASIC_AUTH_RE = re.compile(r"(://)[^/\s:@]+:[^/\s@]+@")
+URL_TOKEN_PARAM_RE = re.compile(
+    r"(?i)([?&](?:token|key|apikey|api_key|access_token|sig|signature)=)[^&\s\"']+"
+)
+# Assignment-shaped credentials. Allows prefixed names (OPENAI_API_KEY) and
+# requires an explicit =/: separator so prose mentioning "password" survives.
+KV_SECRET_RE = re.compile(
+    r"(?i)\b([A-Za-z0-9_]*(?:api[_-]?key|secret|token|password|passwd))"
+    r"(['\"]?\s*[:=]\s*['\"]?)([A-Za-z0-9._~+/-]{12,})"
+)
 
 SOFT_ERROR_RE = re.compile(
-    r"Traceback \(most recent call|FAILED|AssertionError|SyntaxError\b|TypeError\b"
-    r"|NameError\b|ModuleNotFoundError|command not found|No such file|ERROR:|error:"
-    r"|[Ee]xit code [1-9]|fatal:|Permission denied"
+    r"Traceback \(most recent call"
+    r"|\bFAILED\b"
+    r"|\b[A-Z][A-Za-z]*Error\b"  # ValueError, TypeError, "Error: Cannot find module"
+    r"|command not found|No such file"
+    r"|^\s*(?:\S{0,40}[:\s]\s*)?[Ee]rror:"  # line-anchored compiler/CLI "error:"
+    r"|\bERROR\b"
+    r"|[Ee]xit code [1-9]"
+    r"|\bfatal:|Permission denied",
+    re.MULTILINE,
 )
 
 
 def redact_secrets(text: str) -> str:
     """Best-effort scrub of credential-shaped substrings."""
-    for pattern in SECRET_RES[:-1]:
+    for pattern in SECRET_RES:
         text = pattern.sub("[REDACTED]", text)
-    text = SECRET_RES[-1].sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", text)
-    return text
+    text = URL_BASIC_AUTH_RE.sub(r"\1[REDACTED]@", text)
+    text = URL_TOKEN_PARAM_RE.sub(r"\1[REDACTED]", text)
+    return KV_SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", text)
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -147,9 +173,12 @@ class _EpisodeBuilder:
         self.last_success_step = -1
         self.id_to_tool: dict[str, str] = {}
 
-    def add(self, role: str, content: str) -> None:
-        content = redact_secrets(_truncate(content, self.max_step_chars))
+    def add(self, role: str, content: str) -> str:
+        # Redact BEFORE truncating: truncation can split a credential and
+        # leave a fragment the patterns no longer recognize.
+        content = _truncate(redact_secrets(content), self.max_step_chars)
         self.steps.append(Step(role=role, content=content))
+        return content
 
     def note_result(self, *, is_error: bool, soft_error: bool) -> None:
         step_idx = len(self.steps)
@@ -219,14 +248,27 @@ def load_cc_session(
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(rec, dict):
+                continue
             if rec.get("isSidechain") or rec.get("type") not in ("user", "assistant"):
                 continue
-            message = rec.get("message") or {}
+            message = rec.get("message")
+            if not isinstance(message, dict):
+                continue
             content = message.get("content")
 
             if rec.get("type") == "user":
                 human = _human_text(content)
                 if human is not None:
+                    if INTERRUPT_RE.match(human):
+                        # Esc-interrupt: harness meta, but the human stopping
+                        # a trajectory is itself weak correction signal.
+                        if builder is not None:
+                            builder.n_user_corrections += 1
+                            builder.add("user", human)
+                        continue
+                    if CONTINUATION_RE.match(human):
+                        continue  # compaction summary, not a human task
                     if builder is not None and CORRECTION_RE.search(human):
                         builder.n_user_corrections += 1
                         builder.add("user", human)
@@ -240,12 +282,13 @@ def load_cc_session(
                     continue
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_result":
-                        rendered = _render_tool_result(block)
+                        # Scan the SAME text that gets stored, so meta/outcome
+                        # never contradict the visible steps.
+                        stored = builder.add("tool", _render_tool_result(block))
                         builder.note_result(
                             is_error=bool(block.get("is_error")),
-                            soft_error=bool(SOFT_ERROR_RE.search(rendered[:4000])),
+                            soft_error=bool(SOFT_ERROR_RE.search(stored)),
                         )
-                        builder.add("tool", rendered)
                 continue
 
             # assistant record

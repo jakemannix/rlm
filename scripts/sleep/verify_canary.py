@@ -77,6 +77,25 @@ CANARY_ITEMS: list[tuple[str, str, str, bool]] = [
 ]
 
 
+def run_gate(name: str, decide) -> tuple[int, int, int, int]:
+    """Run one gate over the canary items; returns (caught, n_bad, passed, n_good)."""
+    caught = passed = 0
+    n_bad = sum(1 for item in CANARY_ITEMS if not item[3])
+    n_good = len(CANARY_ITEMS) - n_bad
+    for i, (lesson, prompt, response, should_pass) in enumerate(CANARY_ITEMS):
+        example = TrainingExample(
+            prompt=prompt, response=response, lesson=lesson, source_episode_id=f"canary_{i}"
+        )
+        verdict = decide(example)
+        kind = "control" if should_pass else "corrupt"
+        ok = verdict == should_pass
+        caught += int(not should_pass and not verdict)
+        passed += int(should_pass and verdict)
+        print(f"[{name}][{kind}] said {'YES' if verdict else 'NO':3s} -> {'ok' if ok else 'MISS'}")
+    print(f"[{name}] corrupted caught: {caught}/{n_bad}  |  controls passed: {passed}/{n_good}\n")
+    return caught, n_bad, passed, n_good
+
+
 def main() -> None:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
@@ -86,25 +105,20 @@ def main() -> None:
     add_common_args(parser)
     args = parser.parse_args()
 
-    judge = ReflectionJudge(build_judge(args, JudgeConfig()), JudgeConfig())
-    caught = passed = 0
-    n_bad = sum(1 for item in CANARY_ITEMS if not item[3])
-    n_good = len(CANARY_ITEMS) - n_bad
-    for i, (lesson, prompt, response, should_pass) in enumerate(CANARY_ITEMS):
-        example = TrainingExample(
-            prompt=prompt, response=response, lesson=lesson, source_episode_id=f"canary_{i}"
-        )
-        verdict = judge.verify(example)
-        kind = "control" if should_pass else "corrupt"
-        ok = verdict == should_pass
-        caught += int(not should_pass and not verdict)
-        passed += int(should_pass and verdict)
-        print(f"[{kind}] verifier said {'YES' if verdict else 'NO':3s} -> {'ok' if ok else 'MISS'}")
-    print(f"\ncorrupted caught: {caught}/{n_bad}  |  controls passed: {passed}/{n_good}")
-    if caught < n_bad:
-        print("WARNING: the verifier rubber-stamped corrupted examples — do not trust deltas.")
-    if passed < n_good:
-        print("WARNING: the verifier rejects good examples — expect starved training sets.")
+    judge_lm = build_judge(args, JudgeConfig())
+    judge = ReflectionJudge(judge_lm, JudgeConfig())
+    from rlm.sleep.gold import GoldConfig, refute
+
+    gold_config = GoldConfig()
+    caught, n_bad, passed, n_good = run_gate("verify", judge.verify)
+    r_caught, _, r_passed, _ = run_gate(
+        "refute", lambda ex: refute(judge_lm, ex, gold_config)[0] * 2 > gold_config.refuter_votes
+    )
+
+    if caught < n_bad or r_caught < n_bad:
+        print("WARNING: a gate rubber-stamped corrupted examples — do not trust labels.")
+    if passed < n_good or r_passed < n_good:
+        print("WARNING: a gate rejects good examples — expect starved training sets.")
 
 
 if __name__ == "__main__":
