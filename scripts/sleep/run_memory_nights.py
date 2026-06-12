@@ -90,6 +90,9 @@ def main() -> None:
     parser.add_argument("--out", default="runs/sleep/memory_nights")
     args = parser.parse_args()
 
+    from rlm.sleep.local_judge import resolve_torch_dtype
+
+    args.torch_dtype = resolve_torch_dtype(args.torch_dtype, args.device)
     data = Path(args.data)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
