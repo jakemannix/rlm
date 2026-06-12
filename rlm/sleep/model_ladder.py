@@ -61,7 +61,9 @@ AI assistant.
 {evidence}
 
 Distill the single most durable, reusable memory a future agent working \
-with this user should retain from this evidence. State it as one concrete, \
+with this user should retain from this evidence. Prefer durable behavioral \
+lessons, corrections, preferences, or constraints over summaries of what \
+the conversation happened to be about. State it as one concrete, \
 actionable note (1-3 sentences). Respond with ONLY the memory text.
 """
 
