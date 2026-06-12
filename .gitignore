@@ -216,3 +216,4 @@ __marimo__/
 
 # Sleep-consolidation run artifacts (adapters, judge outputs, sweep CSVs)
 runs/sleep/
+personal_chat_archive/
