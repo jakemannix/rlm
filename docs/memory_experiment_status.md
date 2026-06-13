@@ -301,3 +301,90 @@ Tighten into a real causal test:
   keep/reject agrees with frontier tiers at ≥0.9 balanced accuracy at a
   cost that makes thousands of episodes affordable — already in reach
   with 35b-a3b.
+
+---
+
+# Phase E — breadth + scale (the reversal), 2026-06-13
+
+Phases A–D were a **negative** result for the *narrow* recipe (49 memories ×
+~3 exemplars, 4B only): specific-learning −11pp, and the +9pp headline was a
+grader artifact. Phase E changes two variables Jake flagged: **breadth** (many
+*distinct* memories, ~1 exemplar each, not depth-per-memory) and **policy
+scale** (sweep sizes, not 4B only).
+
+## Recipe
+- **Breadth data** (`scripts/sleep/gen_breadth_data.py`): one frontier (Opus)
+  call per claude.ai export episode → a `(durable memory, novel scenario,
+  ideal response)` triple. 800 episodes → **555 distinct-memory apply-exemplars**
+  (`runs/sleep/breadth/sft_breadth.jsonl`). One exemplar per memory.
+- **Train**: LoRA (`all-linear` for dense policies; attention-only for the MoE)
+  on the 555 exemplars, 3 seeds, on Modal H100 (`scripts/memory/modal_gpu.py`).
+- **Eval = transfer**: the **71 held-out frontier-memory probes** (`fm_*`),
+  ID-disjoint from the `cai_*` training memories — the model is graded on
+  applying memories it was *never trained on*. Plus 30 negative-control probes.
+- **Grading**: the trusted `qwen3.6-35b-a3b` judge **and** an independent
+  `deepseek-v4-flash` judge (different family) — behavior, blind win-rate,
+  over-application. (`scripts/sleep/run_uptake_experiment.py --train-file ...`.)
+
+## Result — uptake is real and scales with policy size
+
+| policy | size | base | Δ behavior (qwen) | Δ (deepseek) | win-rate (qwen) | win-rate (ds) | over-apply (q/ds) |
+|--------|------|------|-------------------|--------------|-----------------|---------------|-------------------|
+| Qwen3-4B | 4B | 0.127 | +0.061 | +0.042 | 0.592 | 0.681 | −0.022 / −0.011 |
+| Olmo-3-7B | 7B | 0.127 | +0.085 | +0.094 | 0.671 | 0.710 | −0.011 / +0.000 |
+| Olmo-3.1-32B | 32B | 0.141 | +0.108 | +0.127 | 0.747 | 0.732 | +0.000 / +0.000 |
+
+Figure: `docs/figures/breadth_size_sweep.png`; data: `docs/data/breadth_size_sweep_2026-06-13.csv`.
+
+## Verdict — **robust with caveats** (adversarially pressure-tested, medium confidence)
+
+A 4-lens adversarial panel (arch-confound, low-absolute-rate, shared-judge-bias,
+transfer-leakage) tried to refute the finding; all four returned *minor* — none
+overturns it, but each sharpens the framing. What the evidence **supports**:
+
+- **A transferable, selective disposition is installed.** On 71 ID-disjoint
+  probes never trained on, the adapted policy applies the target behavior more
+  than its own base, and the **blind win-rate is significant at every size under
+  both judges** (deepseek binomtest p = 0.0018 / 0.0003 / 0.00006 for 4B/7B/32B).
+  The **win-rate is the load-bearing metric.**
+- **The effect strengthens with policy size** — win-rate and behavior-Δ both rise
+  monotonically under both independent judges. The **cleanest size-only contrast
+  is within-Olmo 7B→32B** (same architecture family), where it still rises.
+- **Not a verbosity artifact** (adapted is *shorter* than base at every size),
+  **not generic over-firing** (negative-control over-application ≈ 0, exactly
+  0.000 at 32B), and the two judges agree at the *item* level (91.3%, κ = 0.714).
+- This is a genuine **reversal** of the Phase A–D negative.
+
+Honest **caveats** (do not overstate):
+
+- **Low absolute ceiling**: base ~13%, best adapted ~25% — the policy still fails
+  the strict binary test ~75% of the time.
+- **The binary Δ is fragile at the two smaller rungs**: paired-bootstrap 95% CIs
+  cross/touch zero (4B [−0.033, 0.122], 7B [−0.000, 0.188]); only 32B
+  [0.052, 0.207] is individually significant. Net gains are single-digit
+  probe-flips (~3 / 6.7 / 9 of 71). **Headline the win-rate, not the binary Δ.**
+- **Arch × size only partially crossed**: 3 points with one vendor switch on the
+  4B→7B leg; the 4B-Qwen rung corroborates but is arch-confounded. Even the clean
+  leg is Olmo-3 (7B) vs Olmo-3.1 (32B, a point release).
+- **"Held-out" overstates independence**: `cai_*` train and `fm_*` probes are from
+  the *same user's history* and share disposition families (~32/71). Leakage can
+  inflate the gain's *level* but not the *size trend* (which survives on the
+  most-novel subset). Frame as "transfer to held-out-but-overlapping probes."
+- **Residual LLM-judge-modality risk**: two LLM judges can't exclude a shared LLM
+  prior; under strict AND-consensus the gain stays positive at every size but the
+  exact 7B-vs-32B ordering is within noise (growth solid, ranking not).
+
+## Next (ranked, from the panel)
+1. **Cross arch × size** — add a Qwen point at larger size (Qwen3-30B-A3B run in
+   flight) so each architecture spans ≥2 sizes; converts "monotonic from 4B" from
+   partially-confounded to a properly crossed design. *Highest value.*
+2. **Human/non-LLM spot-check** on ~30–50 probes to close the LLM-judge modality.
+3. **More seeds + pre-register win-rate as primary**, binary Δ as secondary.
+4. **Embedding-based leakage analysis**; re-report the gain on a semantically-novel subset.
+5. **Graded/partial-credit behavior score**; test whether more data/exemplars
+   raises the ~25% adapted ceiling (practical usefulness vs mere detectability).
+
+**Compute/infra notes**: Modal H100 for the sweep; the OpenRouter judge needs a
+`max_tokens` cap or it 402s on a low balance (fixed in `OpenAIClient`); `all-linear`
+LoRA OOMs/crawls on large MoE — use attention-only there. See the
+`openrouter-and-moe-lora-gotchas` memory.
