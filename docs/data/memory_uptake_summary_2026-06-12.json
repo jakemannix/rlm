@@ -1,0 +1,13 @@
+{
+  "n_probes": 71,
+  "behavior_uptake": {
+    "base": "59/71 (83%)",
+    "adapted": "65/71 (92%)"
+  },
+  "cot_surfacing": {
+    "base": "34/71 (48%)",
+    "adapted": "27/71 (38%)"
+  },
+  "cumulative": true,
+  "nights_trained": 48
+}
