@@ -130,6 +130,8 @@ def generate_phase(args: argparse.Namespace) -> None:
                 lr=args.lr, epochs=args.epochs, max_seq_len=args.max_seq_len,
                 batch_size=1, grad_accum=4, seed=seed,
             )
+            if args.lora_target == "all-linear":
+                cfg.target_modules = ("all-linear",)
             train_lora(examples, args.policy_model, adir, cfg, device=args.device, torch_dtype=dtype)
             meta = json.loads((adir / "training_meta.json").read_text())
             print(f"  adapter seed {seed}: loss {meta['mean_loss']:.3f}->{meta['final_loss']:.3f}",
@@ -304,6 +306,8 @@ def main() -> None:
     parser.add_argument("--train-seeds", default="0,1,2")
     parser.add_argument("--train-file", default=None,
                         help="breadth mode: SFT jsonl (messages) to train on; eval = all heldout probes")
+    parser.add_argument("--lora-target", default=None, choices=[None, "all-linear"],
+                        help="'all-linear' targets every linear layer (cross-arch sweep)")
     parser.add_argument("--policy-model", default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--torch-dtype", default="auto")

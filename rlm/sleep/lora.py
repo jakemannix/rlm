@@ -78,11 +78,16 @@ def train_lora(
 
     torch.manual_seed(config.seed)
     model, tokenizer = load_policy(model_name, device=device, torch_dtype=torch_dtype)
+    # "all-linear" lets peft target every linear layer regardless of the
+    # architecture's module names — needed for a cross-arch policy sweep
+    # (Olmo/gpt-oss don't use Qwen's q_proj/k_proj/v_proj/o_proj naming).
+    tm = list(config.target_modules)
+    target_modules = "all-linear" if tm == ["all-linear"] else tm
     peft_config = LoraConfig(
         r=config.rank,
         lora_alpha=config.alpha,
         lora_dropout=config.dropout,
-        target_modules=list(config.target_modules),
+        target_modules=target_modules,
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, peft_config)
