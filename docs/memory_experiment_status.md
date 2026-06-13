@@ -197,7 +197,56 @@ scales — each stage's apparent success was partly a measurement artifact
 controls (A2 re-grade, held-out-memory split, derangement-vs-realistic
 negatives) are what surfaced this — and are the main durable contribution.
 
-## Plan from here
+## Phase D result — temporal holdout confirms B: no uptake (2026-06-12, Modal H100)
+
+The consolidation thesis test: train cumulatively on memories dated ≤2026-01-01
+(33 train), probe memories dated *after* (38 future-heldout, never seen).
+Qwen3-4B-Instruct-2507, 3 seeds, 35b-a3b grader. Ran on a **Modal H100** (~7 min
+vs ~40 on the Colab L4; artifacts on the durable Modal Volume + HF).
+
+| set | n | base | adapted (±σ) | Δ |
+|---|---|---|---|---|
+| train (≤cutoff) | 33 | 0.091 | 0.071 ±0.014 | −0.020 |
+| **future** (>cutoff, never trained) | 38 | 0.132 | 0.123 ±0.025 | **−0.009** |
+| negative | 30 | 1.000 | 1.000 | 0.000 |
+
+Future-memory uptake **−0.009**, specific-learning **−0.011** — both
+indistinguishable from zero. Training on past memories does **not** transfer to
+future situations; combined with Phase B (random split, −0.113), the
+weight-baking consolidation loop shows no measurable behavioral effect at this
+scale, whichever way the data is split.
+
+## Final conclusion (all phases complete)
+
+Across A→D, the honest result is **negative for the simple memory-consolidation
+loop at 1.5B–4B**, and the value is in the *controls* that revealed why the
+naive versions looked like they worked:
+
+1. **Uptake doesn't happen** (A2, B, D): SFT on distilled-memory exemplars does
+   not install the target behaviors; effects are flat-to-negative under a
+   trustworthy grader, on random and temporal splits alike. No over-application.
+2. **Cheap judging doesn't discriminate on realistic candidates** (A1 vs C):
+   the 27–35B "elbow" was an artifact of easy derangement negatives; on
+   generated+frontier-labeled candidates even 35B keeps everything
+   (reject-recall ≈ 0). Fine-tuning an 8B judge on the imbalanced set collapses
+   to majority-class.
+3. **Generation of good memories is hard** everywhere except the frontier
+   (gpt-5.5-pro 0.38 equiv).
+
+What works: the *measurement scaffolding* — held-out-memory and negative
+controls, a trusted-grader audit (which overturned the +9pp headline), and
+derangement-vs-realistic negative comparison. These are reusable and are the
+real contribution. The infrastructure (cc/export loaders, frontier-memory
+pipeline, two-phase uptake harness, Modal+Colab GPU runners, HF-durable
+adapters) is committed and reproducible.
+
+### Where to take it next (not run)
+- Uptake is the bottleneck, not curation: try far-more-examples-per-memory,
+  preference/RL on the behavior itself, or in-context memory vs weight-baking.
+- Class-balance the judge trainset; build a realistic (non-derangement) judging
+  eval as the standard going forward.
+
+## Plan from here (superseded — all phases executed above)
 
 ### Phase A — close the loops we already opened (cheap, ~hours)
 1. **Finish the ladder curve.** Rerun with the None-content fix to fill
