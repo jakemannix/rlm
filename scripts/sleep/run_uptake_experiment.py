@@ -59,6 +59,8 @@ def build_train_examples(data: Path, train_ids: set[str]):
 
     rows = []
     for shard in sorted((data / "days").glob("*.jsonl")):
+        if shard.name.startswith("._"):  # skip macOS AppleDouble sidecars
+            continue
         rows += [r for r in load_jsonl(shard) if r.get("memory_id") in train_ids]
     return [
         TrainingExample(
