@@ -86,6 +86,14 @@ def train_lora(
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, peft_config)
+    # Gradient checkpointing keeps activation memory flat in sequence length —
+    # essential for large-vocab models (Qwen3's ~151k vocab makes the CE logits
+    # alone GBs) on a 24GB GPU. Needs use_cache off and inputs to require grad.
+    if getattr(config, "gradient_checkpointing", True):
+        model.config.use_cache = False
+        model.gradient_checkpointing_enable()
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
     model.train()
 
     encoded = [encode_example(tokenizer, ex, system_prompt, config.max_seq_len) for ex in examples]
