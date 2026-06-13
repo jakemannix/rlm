@@ -32,9 +32,16 @@ class OpenAIClient(BaseLM):
         api_key: str | None = None,
         model_name: str | None = None,
         base_url: str | None = None,
+        max_tokens: int | None = None,
         **kwargs,
     ):
         super().__init__(model_name=model_name, **kwargs)
+        # Default completion cap. Unset means "let the provider decide", but
+        # OpenRouter bills affordability against the model's full max (e.g.
+        # 65536 for qwen3.6-35b-a3b), so an unset cap 402s on a low balance
+        # even for a one-line answer. Callers that only need short outputs
+        # (graders, classifiers) should pass a small cap.
+        self.max_tokens = max_tokens
 
         if api_key is None:
             if base_url == "https://api.openai.com/v1" or base_url is None:
@@ -82,8 +89,11 @@ class OpenAIClient(BaseLM):
         if self.client.base_url == DEFAULT_PRIME_INTELLECT_BASE_URL:
             extra_body["usage"] = {"include": True}
 
+        create_kwargs: dict[str, Any] = {}
+        if self.max_tokens is not None:
+            create_kwargs["max_tokens"] = self.max_tokens
         response = self.client.chat.completions.create(
-            model=model, messages=messages, extra_body=extra_body
+            model=model, messages=messages, extra_body=extra_body, **create_kwargs
         )
         self._track_cost(response, model)
         return response.choices[0].message.content
@@ -106,8 +116,11 @@ class OpenAIClient(BaseLM):
         if self.client.base_url == DEFAULT_PRIME_INTELLECT_BASE_URL:
             extra_body["usage"] = {"include": True}
 
+        create_kwargs: dict[str, Any] = {}
+        if self.max_tokens is not None:
+            create_kwargs["max_tokens"] = self.max_tokens
         response = await self.async_client.chat.completions.create(
-            model=model, messages=messages, extra_body=extra_body
+            model=model, messages=messages, extra_body=extra_body, **create_kwargs
         )
         self._track_cost(response, model)
         return response.choices[0].message.content

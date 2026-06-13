@@ -202,7 +202,11 @@ def grade_phase(args: argparse.Namespace) -> None:
     cache = _CallCache(out / f"grade_cache_{args.judge_model.replace('/', '_')}.json")
     purge_invalid(cache)
     judge = CachedJudge(
-        OpenAIClient(model_name=args.judge_model, base_url=OPENROUTER_BASE_URL), cache, "grade"
+        OpenAIClient(
+            model_name=args.judge_model, base_url=OPENROUTER_BASE_URL,
+            max_tokens=args.judge_max_tokens,
+        ),
+        cache, "grade",
     )
     seeds = sorted({s for r in rows for s in r["adapted"]})
 
@@ -320,6 +324,8 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--judge-model", default="qwen/qwen3.6-35b-a3b")
     parser.add_argument("--grade-workers", type=int, default=8)
+    parser.add_argument("--judge-max-tokens", type=int, default=4096,
+                        help="cap judge completion length; unset 402s on OpenRouter low balance")
     parser.add_argument("--out", default="runs/sleep/uptake")
     args = parser.parse_args()
 
