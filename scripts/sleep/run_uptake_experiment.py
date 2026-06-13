@@ -198,8 +198,7 @@ def grade_phase(args: argparse.Namespace) -> None:
             )
         return grade_behavior(judge, row["scenario"], response, row.get("behavior_marker") or "")
 
-    report_rows = []
-    for row in rows:
+    def grade_row(row: dict) -> dict:
         rec = {
             "probe_id": row["probe_id"],
             "set": row["set"],
@@ -212,7 +211,12 @@ def grade_phase(args: argparse.Namespace) -> None:
             rec["adapted_cot"] = [
                 grade_cot(judge, row["adapted"][s], row.get("principle") or "") for s in seeds
             ]
-        report_rows.append(rec)
+        return rec
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=args.grade_workers) as pool:
+        report_rows = list(pool.map(grade_row, rows))
 
     def rate(set_name: str, arm: str, key: str) -> tuple[float, float] | None:
         sub = [r for r in report_rows if r["set"] == set_name and f"{arm}_{key}" in r]
@@ -292,6 +296,7 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--judge-model", default="qwen/qwen3.6-35b-a3b")
+    parser.add_argument("--grade-workers", type=int, default=8)
     parser.add_argument("--out", default="runs/sleep/uptake")
     args = parser.parse_args()
 
