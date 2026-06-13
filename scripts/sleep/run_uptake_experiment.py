@@ -84,23 +84,40 @@ def generate_phase(args: argparse.Namespace) -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    prep = json.loads((data / "prep.json").read_text())
-    split = compute_split(prep, args)
-    (out / "split.json").write_text(json.dumps(split, indent=2))
-    train_ids, heldout_ids = set(split["train"]), set(split["heldout"])
-    print(f"split: {len(train_ids)} train / {len(heldout_ids)} heldout", flush=True)
-
     heldout_probes = load_jsonl(data / "probes_heldout.jsonl")
-    probe_sets = {
-        "train": [p for p in heldout_probes if p["memory_id"] in train_ids],
-        "heldout": [p for p in heldout_probes if p["memory_id"] in heldout_ids],
-        "negative": load_jsonl(args.negative_probes) if Path(args.negative_probes).exists() else [],
-    }
+    negatives = load_jsonl(args.negative_probes) if Path(args.negative_probes).exists() else []
+
+    if args.train_file:
+        # Breadth mode: train on an external SFT file (many distinct memories,
+        # disjoint from the probe memories), eval transfer on ALL probes_heldout.
+        from rlm.sleep.types import TrainingExample
+
+        train_rows = load_jsonl(args.train_file)
+        examples = [
+            TrainingExample(
+                prompt=r["messages"][0]["content"], response=r["messages"][1]["content"],
+                lesson=r.get("memory", ""), source_episode_id=r.get("episode_id", "?"), verified=True,
+            )
+            for r in train_rows
+        ]
+        probe_sets = {"train": [], "heldout": heldout_probes, "negative": negatives}
+        print(f"breadth mode: {len(examples)} exemplars -> eval {len(heldout_probes)} transfer probes",
+              flush=True)
+    else:
+        prep = json.loads((data / "prep.json").read_text())
+        split = compute_split(prep, args)
+        (out / "split.json").write_text(json.dumps(split, indent=2))
+        train_ids, heldout_ids = set(split["train"]), set(split["heldout"])
+        print(f"split: {len(train_ids)} train / {len(heldout_ids)} heldout", flush=True)
+        probe_sets = {
+            "train": [p for p in heldout_probes if p["memory_id"] in train_ids],
+            "heldout": [p for p in heldout_probes if p["memory_id"] in heldout_ids],
+            "negative": negatives,
+        }
+        examples = build_train_examples(data, train_ids)
+        print(f"training examples (TRAIN memories only): {len(examples)}", flush=True)
     for name, ps in probe_sets.items():
         print(f"  probe set {name}: {len(ps)}", flush=True)
-
-    examples = build_train_examples(data, train_ids)
-    print(f"training examples (TRAIN memories only): {len(examples)}", flush=True)
 
     seeds = [int(s) for s in args.train_seeds.split(",")]
     adapters: dict[int, Path] = {}
@@ -285,6 +302,8 @@ def main() -> None:
     parser.add_argument("--split-seed", type=int, default=0)
     parser.add_argument("--cutoff", default="2026-01-01", help="temporal split date")
     parser.add_argument("--train-seeds", default="0,1,2")
+    parser.add_argument("--train-file", default=None,
+                        help="breadth mode: SFT jsonl (messages) to train on; eval = all heldout probes")
     parser.add_argument("--policy-model", default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--torch-dtype", default="auto")
