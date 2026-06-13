@@ -135,7 +135,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=["train", "compare"], required=True)
     parser.add_argument("--data", default="runs/sleep/judge_trainset")
-    parser.add_argument("--base-model", default="Qwen/Qwen3-8B")
+    parser.add_argument("--base-model", default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--baseline-model", default="qwen/qwen3.6-35b-a3b")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--torch-dtype", default="auto")

@@ -32,7 +32,11 @@ from rlm.sleep.frontier_memories import split_memories
 
 
 def load_jsonl(path: str | Path) -> list[dict]:
-    return [json.loads(line) for line in Path(path).open(encoding="utf-8")]
+    return [
+        json.loads(line)
+        for line in Path(path).open(encoding="utf-8", errors="replace")
+        if line.strip()
+    ]
 
 
 def compute_split(prep: list[dict], args: argparse.Namespace) -> dict[str, list[str]]:
@@ -266,7 +270,7 @@ def main() -> None:
     parser.add_argument("--split-seed", type=int, default=0)
     parser.add_argument("--cutoff", default="2026-01-01", help="temporal split date")
     parser.add_argument("--train-seeds", default="0,1,2")
-    parser.add_argument("--policy-model", default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument("--policy-model", default="Qwen/Qwen3-4B-Instruct-2507")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--torch-dtype", default="auto")
     parser.add_argument("--max-seq-len", type=int, default=2048)
