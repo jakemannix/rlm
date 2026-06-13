@@ -75,8 +75,14 @@ VERDICT: NO
 
 
 def _verdict(judge_lm: BaseLM, prompt: str) -> bool | None:
-    """Run the grader; True/False from the last 3 lines, None if unparseable."""
-    text = judge_lm.completion(prompt)
+    """Run the grader; True/False from the last 3 lines, None if unparseable.
+
+    Any grader exception (e.g. a thinking model returning empty content even
+    after retries) is a non-verdict, not a crash — grading fails closed."""
+    try:
+        text = judge_lm.completion(prompt)
+    except Exception:  # noqa: BLE001 - a failed grade must not kill the run
+        return None
     if not isinstance(text, str):
         return None
     lines = [line.strip() for line in text.splitlines() if line.strip()]

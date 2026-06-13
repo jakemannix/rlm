@@ -203,6 +203,33 @@ class _NonEmpty:
         return response
 
 
+class CachedJudge:
+    """A disk-cached, retrying, empty-content-guarded judge wrapper.
+
+    Reused by the ladder, the probe re-grader, and the uptake grader so they
+    all handle OpenRouter's routine 429s/400s and the empty completions from
+    hybrid-thinking models identically — retry with backoff, then raise so the
+    caller (e.g. grading._verdict) can fail closed."""
+
+    def __init__(self, lm: BaseLM, cache: _CallCache, kind: str, retries: int = 4):
+        self._guarded = _NonEmpty(lm)
+        self._cache = cache
+        self._kind = kind
+        self._retries = retries
+        self.model_name = lm.model_name
+        self.temperature = getattr(lm, "temperature", None)
+
+    def completion(self, prompt: str) -> str:
+        last: Exception | None = None
+        for attempt in range(self._retries):
+            try:
+                return self._cache.completions(self._guarded, self._kind, prompt, 1)[0]
+            except Exception as exc:  # noqa: BLE001 - provider errors are diverse
+                last = exc
+                time.sleep(1.5 * (attempt + 1))
+        raise ValueError(f"judge failed after {self._retries} attempts: {str(last)[:120]}")
+
+
 def purge_invalid(cache: _CallCache) -> int:
     """Drop cache entries containing non-string/empty responses (poison
     from before _NonEmpty existed). Returns the number purged."""

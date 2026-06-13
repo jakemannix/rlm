@@ -160,23 +160,16 @@ def grade_phase(args: argparse.Namespace) -> None:
     from rlm.clients.openai import OpenAIClient
     from rlm.sleep.gold import _CallCache
     from rlm.sleep.grading import grade_behavior, grade_cot, grade_over_application
-    from rlm.sleep.model_ladder import OPENROUTER_BASE_URL, _NonEmpty, purge_invalid
+    from rlm.sleep.model_ladder import OPENROUTER_BASE_URL, CachedJudge, purge_invalid
     from rlm.sleep.winrate import judged_win_rate
 
     out = Path(args.out)
     rows = load_jsonl(out / "responses.jsonl")
     cache = _CallCache(out / f"grade_cache_{args.judge_model.replace('/', '_')}.json")
     purge_invalid(cache)
-    lm = _NonEmpty(OpenAIClient(model_name=args.judge_model, base_url=OPENROUTER_BASE_URL))
-
-    class CJ:
-        model_name = args.judge_model
-        temperature = None
-
-        def completion(self, prompt: str) -> str:
-            return cache.completions(lm, "grade", prompt, 1)[0]
-
-    judge = CJ()
+    judge = CachedJudge(
+        OpenAIClient(model_name=args.judge_model, base_url=OPENROUTER_BASE_URL), cache, "grade"
+    )
     seeds = sorted({s for r in rows for s in r["adapted"]})
 
     def behavior_hit(row: dict, response: str) -> bool:

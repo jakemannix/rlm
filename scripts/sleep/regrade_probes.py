@@ -19,21 +19,7 @@ from pathlib import Path
 
 from rlm.sleep.gold import _CallCache
 from rlm.sleep.grading import grade_behavior, grade_cot
-from rlm.sleep.model_ladder import OPENROUTER_BASE_URL, _NonEmpty, purge_invalid
-
-
-class _CachedJudge:
-    """Wrap a BaseLM so each grading call is disk-cached and non-empty-guarded."""
-
-    def __init__(self, lm, cache: _CallCache, kind: str):
-        self._guarded = _NonEmpty(lm)
-        self._cache = cache
-        self._kind = kind
-        self.model_name = lm.model_name
-        self.temperature = getattr(lm, "temperature", None)
-
-    def completion(self, prompt: str) -> str:
-        return self._cache.completions(self._guarded, self._kind, prompt, 1)[0]
+from rlm.sleep.model_ladder import OPENROUTER_BASE_URL, CachedJudge, purge_invalid
 
 
 def main() -> None:
@@ -60,7 +46,7 @@ def main() -> None:
     cache = _CallCache(out / f"regrade_cache_{args.judge_model.replace('/', '_')}.json")
     purge_invalid(cache)
     lm = OpenAIClient(model_name=args.judge_model, base_url=OPENROUTER_BASE_URL)
-    judge = _CachedJudge(lm, cache, "grade")
+    judge = CachedJudge(lm, cache, "grade")
 
     def regrade(row: dict) -> dict:
         probe = probes.get(row["memory_id"], {})
