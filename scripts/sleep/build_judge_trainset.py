@@ -107,7 +107,7 @@ def main() -> None:
     for r in labeled:
         by_tier.setdefault(r["label"]["tier"], []).append(r)
     train, test = [], []
-    for tier, group in sorted(by_tier.items()):
+    for _tier, group in sorted(by_tier.items()):
         group.sort(key=lambda r: hashlib.sha256(r["memory"].encode()).hexdigest())
         n_test = round(len(group) * args.test_fraction)
         test += group[:n_test]
