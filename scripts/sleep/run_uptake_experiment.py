@@ -78,7 +78,6 @@ def generate_phase(args: argparse.Namespace) -> None:
     from rlm.sleep.config import AdapterConfig
     from rlm.sleep.local_judge import resolve_torch_dtype
     from rlm.sleep.lora import load_adapter, load_policy, train_lora
-    from rlm.sleep.winrate import generate_response
 
     dtype = resolve_torch_dtype(args.torch_dtype, args.device)
     data = Path(args.data)
@@ -106,55 +105,65 @@ def generate_phase(args: argparse.Namespace) -> None:
     seeds = [int(s) for s in args.train_seeds.split(",")]
     adapters: dict[int, Path] = {}
     for seed in seeds:
-        cfg = AdapterConfig(
-            lr=args.lr,
-            epochs=args.epochs,
-            max_seq_len=args.max_seq_len,
-            batch_size=1,
-            grad_accum=4,
-            seed=seed,
-        )
         adir = out / f"adapter_seed{seed}"
-        train_lora(examples, args.policy_model, adir, cfg, device=args.device, torch_dtype=dtype)
+        if args.reuse_adapters and (adir / "training_meta.json").exists():
+            print(f"  adapter seed {seed}: reusing existing", flush=True)
+        else:
+            cfg = AdapterConfig(
+                lr=args.lr, epochs=args.epochs, max_seq_len=args.max_seq_len,
+                batch_size=1, grad_accum=4, seed=seed,
+            )
+            train_lora(examples, args.policy_model, adir, cfg, device=args.device, torch_dtype=dtype)
+            meta = json.loads((adir / "training_meta.json").read_text())
+            print(f"  adapter seed {seed}: loss {meta['mean_loss']:.3f}->{meta['final_loss']:.3f}",
+                  flush=True)
         adapters[seed] = adir
-        meta = json.loads((adir / "training_meta.json").read_text())
-        print(
-            f"  adapter seed {seed}: loss {meta['mean_loss']:.3f}->{meta['final_loss']:.3f}",
-            flush=True,
-        )
 
-    base_model, tok = load_policy(args.policy_model, device=args.device, torch_dtype=dtype)
-    base_model.eval()
+    import torch
 
-    def gen(model, scenario: str) -> str:
-        return generate_response(
-            model, tok, [{"role": "user", "content": scenario}], args.device, max_new_tokens=512
-        )
+    def batch_generate(model, scenarios: list[str]) -> list[str]:
+        """Left-padded batched greedy decode — ~Bx faster than one at a time."""
+        tok.padding_side = "left"
+        outputs: list[str] = []
+        for i in range(0, len(scenarios), args.gen_batch_size):
+            chunk = scenarios[i : i + args.gen_batch_size]
+            texts = [
+                tok.apply_chat_template([{"role": "user", "content": s}], tokenize=False,
+                                        add_generation_prompt=True)
+                for s in chunk
+            ]
+            enc = tok(texts, return_tensors="pt", padding=True, add_special_tokens=False).to(args.device)
+            with torch.no_grad():
+                gen = model.generate(**enc, max_new_tokens=args.max_new_tokens, do_sample=False,
+                                     pad_token_id=tok.pad_token_id)
+            for j in range(len(chunk)):
+                outputs.append(tok.decode(gen[j, enc["input_ids"].shape[1]:], skip_special_tokens=True))
+        return outputs
 
     rows = []
     for set_name, ps in probe_sets.items():
         for p in ps:
-            scenario = p["scenario"]
-            rows.append(
-                {
-                    "probe_id": p.get("probe_id", p.get("memory_id")),
-                    "set": set_name,
-                    "memory_id": p.get("memory_id"),
-                    "tier": p.get("tier"),
-                    "memory_type": p.get("memory_type"),
-                    "scenario": scenario,
-                    "behavior_marker": p.get("behavior_marker"),
-                    "should_not_exhibit": p.get("should_not_exhibit"),
-                    "principle": p.get("memory"),
-                    "base": gen(base_model, scenario),
-                    "adapted": {},
-                }
-            )
+            rows.append({
+                "probe_id": p.get("probe_id", p.get("memory_id")), "set": set_name,
+                "memory_id": p.get("memory_id"), "tier": p.get("tier"),
+                "memory_type": p.get("memory_type"), "scenario": p["scenario"],
+                "behavior_marker": p.get("behavior_marker"),
+                "should_not_exhibit": p.get("should_not_exhibit"),
+                "principle": p.get("memory"), "adapted": {},
+            })
+    scenarios = [r["scenario"] for r in rows]
+
+    base_model, tok = load_policy(args.policy_model, device=args.device, torch_dtype=dtype)
+    base_model.eval()
+    for row, resp in zip(rows, batch_generate(base_model, scenarios), strict=True):
+        row["base"] = resp
     del base_model
+    print("  generated base responses", flush=True)
     for seed, adir in adapters.items():
         amodel, _ = load_adapter(args.policy_model, adir, device=args.device, torch_dtype=dtype)
-        for row in rows:
-            row["adapted"][str(seed)] = gen(amodel, row["scenario"])
+        amodel.eval()
+        for row, resp in zip(rows, batch_generate(amodel, scenarios), strict=True):
+            row["adapted"][str(seed)] = resp
         del amodel
         print(f"  generated responses for seed {seed}", flush=True)
 
@@ -276,6 +285,10 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--torch-dtype", default="auto")
     parser.add_argument("--max-seq-len", type=int, default=2048)
+    parser.add_argument("--max-new-tokens", type=int, default=320)
+    parser.add_argument("--gen-batch-size", type=int, default=16)
+    parser.add_argument("--reuse-adapters", action="store_true",
+                        help="reuse already-trained adapter dirs (skip retraining)")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--judge-model", default="qwen/qwen3.6-35b-a3b")
