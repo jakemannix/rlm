@@ -166,3 +166,31 @@ def shard_by_day(examples: list[dict]) -> dict[str, list[dict]]:
     for example in examples:
         shards[example.get("day", "unknown")].append(example)
     return dict(sorted(shards.items()))
+
+
+def split_memories(
+    memories: list[dict], heldout_fraction: float = 0.3, seed: int = 0
+) -> dict[str, list[str]]:
+    """Deterministic train/heldout split of memory ids, stratified by
+    (memory_type, tier) so both arms cover the same kinds of memory.
+
+    Within each stratum, ids are ordered by a stable hash of (seed, id) and
+    the first ``heldout_fraction`` go to heldout — fully reproducible from
+    ``seed`` with no RNG state. Returns ``{"train": [...], "heldout": [...]}``.
+    """
+    import hashlib
+
+    strata: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for memory in memories:
+        strata[(memory.get("memory_type", ""), memory.get("tier", ""))].append(memory)
+
+    def rank(mid: str) -> str:
+        return hashlib.sha256(f"{seed}\x1e{mid}".encode()).hexdigest()
+
+    train, heldout = [], []
+    for _, group in sorted(strata.items()):
+        ordered = sorted(group, key=lambda m: rank(m["memory_id"]))
+        n_heldout = round(len(ordered) * heldout_fraction)
+        for i, memory in enumerate(ordered):
+            (heldout if i < n_heldout else train).append(memory["memory_id"])
+    return {"train": sorted(train), "heldout": sorted(heldout)}
