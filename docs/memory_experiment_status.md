@@ -128,6 +128,46 @@ Two clean findings (original 8-model run):
   (`runs/sleep/judge_calibration/`) — 42% matched-keep, blind to tiers,
   worst on behavioral memory types.
 
+## Phase B result — the causal uptake test came back NEGATIVE (2026-06-12)
+
+Policy **Qwen3-4B-Instruct-2507** (latest text-causal Qwen), random 49/22
+train/heldout memory split, 3 seeds, graded by 35b-a3b. The controls the
+dry-run lacked, finally in place:
+
+| probe set | n | base | adapted (±σ over seeds) | Δ |
+|---|---|---|---|---|
+| **train** (trained memory, novel probe) | 49 | 0.204 | 0.136 ± 0.025 | **−0.068** |
+| **heldout** (memory never trained) | 22 | 0.045 | 0.091 ± 0.037 | +0.045 |
+| **negative** (no memory should fire) | 30 | 1.000 | 1.000 ± 0.000 | 0.000 |
+
+- **Specific-learning contrast (train Δ − heldout Δ) = −0.113.** The opposite
+  sign of the hypothesis. Training did **not** install the trained memories'
+  behaviors; it *lowered* targeted behavior on the trained set while nudging the
+  untrained set up from near-zero.
+- Reading: trained behaviors (base 0.20) fell and untrained ones (base 0.045)
+  rose, both converging to ~0.10–0.14 — a **generic style shift, not
+  memory-specific learning**. The adapter changed *how* the model writes without
+  installing *which* behavior to exhibit.
+- CoT ≈ 0 throughout (the 4B doesn't visibly reason about the principle).
+- Negative-control delta is 0 — no over-application (the one clean positive).
+
+**Caveats:** small n (49/22) with wide error bars; an unexplained base-rate
+asymmetry (train 0.20 vs heldout 0.045) muddies the train-vs-heldout contrast;
+absolute rates are low (4–20%). But the direction is clear and consistent with
+A2: **the distill+apply LoRA-SFT recipe does not produce targeted behavioral
+uptake at 1.5B–4B.** Artifacts: `runs/sleep/uptake_q3_4b/`.
+
+### The emerging cross-phase picture
+- **Curation (judging memory-worthiness): tractable** — clean elbow at ~27–35B
+  MoE matching frontier (Phase A1).
+- **Generation of good memories: hard** — only frontier-ish (gpt-5.5-pro best
+  at 0.38 equiv).
+- **Uptake (training a small model to behave per memories): does not work**
+  with this recipe at 1.5B–4B (Phase A2 + B). This is the headline negative
+  result, and it redirects the program: the bottleneck isn't curation, it's
+  getting curated memories to *change behavior* — which SFT-on-exemplars doesn't
+  achieve here.
+
 ## Plan from here
 
 ### Phase A — close the loops we already opened (cheap, ~hours)
