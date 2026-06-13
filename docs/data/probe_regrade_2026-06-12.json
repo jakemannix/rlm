@@ -1,0 +1,24 @@
+{
+  "judge_model": "qwen/qwen3.6-35b-a3b",
+  "n_probes": 71,
+  "behavior_uptake": {
+    "regraded": {
+      "base": "3/71 (4%)",
+      "adapted": "8/71 (11%)"
+    },
+    "original_1.5b": {
+      "base": "59/71 (83%)",
+      "adapted": "65/71 (92%)"
+    }
+  },
+  "cot_surfacing": {
+    "regraded": {
+      "base": "0/71 (0%)",
+      "adapted": "0/71 (0%)"
+    },
+    "original_1.5b": {
+      "base": "34/71 (48%)",
+      "adapted": "27/71 (38%)"
+    }
+  }
+}

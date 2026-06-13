@@ -57,6 +57,33 @@ lesson into a reflex rather than explicit reasoning.
 - No held-out-*memory* control: we can't yet separate "learned this
   specific memory" from "got generally more cautious."
 
+### 1b. A2 RE-GRADE — the +9pp headline was a grader artifact (2026-06-12, Opus session)
+
+Re-grading the **same cached responses** with the ladder-proven
+`qwen3.6-35b-a3b` judge (`runs/sleep/memory_nights/regraded_summary.json`):
+
+| metric | base | adapted | grader |
+|---|---|---|---|
+| behavior uptake | 59/71 (83%) | 65/71 (92%) | 1.5B (lenient — discredited) |
+| behavior uptake | **3/71 (4%)** | **8/71 (11%)** | 35b-a3b (trusted) |
+| CoT surfacing | 34/71 (48%) | 27/71 (38%) | 1.5B |
+| CoT surfacing | **0/71 (0%)** | **0/71 (0%)** | 35b-a3b |
+
+The 1.5B grader rubber-stamped almost everything. Under the trusted
+grader the real story is: **a 1.5B base almost never exhibits these
+behaviors (4%), training roughly triples that (→11%, still low absolute),
+and it never visibly reasons about the principle (0% CoT both arms).**
+The "+9pp" was noise in a bad instrument; the true effect is a small,
+real lift off a near-zero floor, on a model below the capability bar for
+the nuanced behaviors and CoT we're probing.
+
+**Decision (drives Phase B):** the 1.5B is too weak a *policy* to be the
+main testbed — it can't exhibit nuanced behaviors or produce CoT. Phase B
+runs primarily on a stronger small policy (Qwen2.5-7B-Instruct: CoT-capable,
+LoRA-trainable on the Colab L4), with the 1.5B kept as a cheap second point
+so the curve answers "does memory uptake scale with policy capability?".
+All Phase B grading uses 35b-a3b, never the policy itself.
+
 ### 2. Curation-quality elbow (`runs/sleep/model_ladder/`)
 
 71 matched + 71 derangement-mismatched triplets per model. Classification
