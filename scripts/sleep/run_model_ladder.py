@@ -35,14 +35,25 @@ from rlm.sleep.model_ladder import (
 # every launch. Claude rung is the ceiling anchor but carries a
 # self-family bias caveat (the gold references are Claude-authored).
 DEFAULT_MODELS = [
+    # bottom of the curve — small dense + a within-family Ministral 3/8/14 sweep
+    "mistralai/ministral-3b-2512",
+    "mistralai/ministral-8b-2512",
+    "ibm-granite/granite-4.1-8b",
     "qwen/qwen3.5-9b",
+    # mid
+    "mistralai/ministral-14b-2512",
     "qwen/qwen3.6-27b",
+    "qwen/qwen3.5-35b-a3b",
     "qwen/qwen3.6-35b-a3b",
+    # large
     "qwen/qwen3.5-122b-a10b",
     "z-ai/glm-5.1",
     "deepseek/deepseek-v4-flash",
     "qwen/qwen3.7-max",
+    # frontier ceiling
     "anthropic/claude-sonnet-4.6",
+    "anthropic/claude-opus-4.8",
+    "openai/gpt-5.5-pro",
 ]
 
 
