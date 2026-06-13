@@ -101,7 +101,19 @@ non-Claude referee (gemini-3.1-pro).
 | deepseek-v4-flash | 0.775 | 0.84 | 2.20 | 0.14 |
 | qwen3.5-9b / qwen3.6-27b | (errored — None content; fix landed, rerun pending) |
 
-Two clean findings:
+**Full 15-rung ladder (2026-06-12, Opus session)** — `docs/data/model_ladder_full.csv`,
+`docs/figures/model_ladder_elbow.png`. Judging balanced-accuracy, top→bottom:
+Opus-4.8 0.908 · qwen3.6-27b 0.901 · qwen3.6-35b-a3b 0.894 (tier-agree 0.98) ·
+qwen3.7-max 0.887 · glm-5.1 0.845 · qwen3.5-122b-a10b 0.838 · qwen3.5-35b-a3b
+0.831 · gpt-5.5-pro 0.796 · sonnet-4.6 0.782 · qwen3.5-9b 0.775 ·
+deepseek-v4-flash 0.775 · **then a cliff** to ministral-3b 0.609, granite-4.1-8b
+0.535, ministral-14b 0.528, ministral-8b 0.507 (≈ chance). The judging elbow is
+sharp: a ~27–35B MoE (qwen3.6) **matches Opus-4.8**, and below ~9B it collapses.
+Generation stays hard everywhere (equiv ≤0.27) except **gpt-5.5-pro (0.38 equiv,
+coverage 2.87)** — the one model meaningfully better at producing the reference
+memory.
+
+Two clean findings (original 8-model run):
 - **Curation *judging* has a low, local elbow.** `qwen3.6-35b-a3b` — a
   3B-active MoE that runs on this machine — tops the ladder at 0.894
   balanced / 0.98 tier-agreement, beating both qwen3.7-max and
