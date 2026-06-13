@@ -1,13 +1,18 @@
 """Build a frontier-labeled trainset for fine-tuning a memory-worthiness judge.
 
-Positives: the 71 frontier-curated memories (their tier is the label).
-Pool: a sample of the audit's 985 high-recall heuristic candidates, labeled
-keep/reject+tier by a frontier model (Opus) via OpenRouter — these supply the
-rejects the curated set lacks. Combined, deduped, and split into train/test as
-chat SFT rows whose target is the worthiness JSON.
+The judge learns: given a candidate memory + its evidence, keep (gold/silver)
+or reject. Two sources, both with frontier ground truth:
+
+  - the 71 frontier-curated memories (their tier is the label) — clean positives;
+  - candidates *generated* from a sample of the user's claude.ai-export episodes
+    by a cheap proposer, then labeled keep/reject+tier by a frontier model (Opus).
+    Generating from real episodes yields a natural keep/reject mix — the rejects
+    the curated set lacks. (The audit's heuristic-candidates file is NOT used: it
+    is a coarse coverage map with only ~6 distinct candidate strings across 985
+    rows.)
 
     OPENROUTER_API_KEY=... python scripts/sleep/build_judge_trainset.py \
-        --n-heuristic 300 --labeler-model anthropic/claude-opus-4.8
+        --n-episodes 280 --labeler-model anthropic/claude-opus-4.8
 """
 
 from __future__ import annotations
@@ -15,31 +20,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from rlm.sleep.claude_export import load_claude_export
 from rlm.sleep.gold import _CallCache
 from rlm.sleep.judge_worthiness import WORTHINESS_PROMPT, parse_worthiness, worthiness_messages
-from rlm.sleep.model_ladder import OPENROUTER_BASE_URL, _NonEmpty, purge_invalid
-
-AUDIT = Path("personal_chat_archive/frontier_quality_audit")
-
-
-def norm(text: str) -> str:
-    return re.sub(r"\W+", " ", text.lower()).strip()
+from rlm.sleep.model_ladder import GENERATE_PROMPT, OPENROUTER_BASE_URL, CachedJudge
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prep", default="runs/sleep/frontier_memories/prep.json")
-    parser.add_argument(
-        "--heuristic",
-        default=str(AUDIT / "exhaustive_round1/memory_first_heuristic_candidates.jsonl"),
-    )
-    parser.add_argument("--n-heuristic", type=int, default=300)
+    parser.add_argument("--export", default="personal_chat_archive")
+    parser.add_argument("--n-episodes", type=int, default=280)
+    parser.add_argument("--propose-model", default="qwen/qwen3.6-35b-a3b")
     parser.add_argument("--labeler-model", default="anthropic/claude-opus-4.8")
+    parser.add_argument("--evidence-chars", type=int, default=4000)
     parser.add_argument("--test-fraction", type=float, default=0.2)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--out", default="runs/sleep/judge_trainset")
@@ -49,60 +47,58 @@ def main() -> None:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    cache = _CallCache(out / "label_cache.json")
+
+    def client(model: str, kind: str) -> CachedJudge:
+        return CachedJudge(
+            OpenAIClient(model_name=model, base_url=OPENROUTER_BASE_URL), cache, kind
+        )
+
+    proposer = client(args.propose_model, "propose")
+    labeler = client(args.labeler_model, "label")
 
     # Positives: the 71 frontier memories (tier is the label).
     frontier = json.loads(Path(args.prep).read_text())
-    seen = {norm(m["memory"]) for m in frontier}
     labeled = [
         {
             "memory": m["memory"],
-            "evidence": "\n\n".join(e["context"] for e in m.get("evidence", [])[:2])[:3000],
+            "evidence": "\n\n".join(e["context"] for e in m.get("evidence", [])[:2])[
+                : args.evidence_chars
+            ],
             "label": {"keep": True, "tier": m["tier"], "reason": "frontier-curated"},
             "source": "frontier",
         }
         for m in frontier
     ]
 
-    # Pool: sample heuristic candidates (deterministic), dedup vs the 71.
-    heuristic = [json.loads(line) for line in Path(args.heuristic).open()]
-    heuristic.sort(key=lambda c: hashlib.sha256(c["id"].encode()).hexdigest())
-    pool, pool_seen = [], set(seen)
-    for c in heuristic:
-        key = norm(c["candidate_memory"])
-        if key in pool_seen:
-            continue
-        pool_seen.add(key)
-        pool.append(c)
-        if len(pool) >= args.n_heuristic:
-            break
+    # Sample episodes deterministically, generate a candidate, label with Opus.
+    episodes = load_claude_export(args.export)
+    episodes.sort(key=lambda e: hashlib.sha256(e.episode_id.encode()).hexdigest())
+    episodes = episodes[: args.n_episodes]
 
-    cache = _CallCache(out / f"label_cache_{args.labeler_model.replace('/', '_')}.json")
-    purge_invalid(cache)
-    lm = _NonEmpty(OpenAIClient(model_name=args.labeler_model, base_url=OPENROUTER_BASE_URL))
-
-    def label(c: dict) -> dict | None:
-        evidence = (
-            f"[user] {c.get('human_excerpt', '')}\n[assistant] {c.get('assistant_excerpt', '')}"[
-                :3000
-            ]
-        )
-        prompt = WORTHINESS_PROMPT.format(memory=c["candidate_memory"], evidence=evidence)
-        verdict = parse_worthiness(cache.completions(lm, "worthiness", prompt, 1)[0])
+    def make(ep) -> dict | None:
+        evidence = ep.transcript(max_chars=args.evidence_chars)
+        try:
+            candidate = proposer.completion(GENERATE_PROMPT.format(evidence=evidence)).strip()
+            verdict = parse_worthiness(
+                labeler.completion(WORTHINESS_PROMPT.format(memory=candidate, evidence=evidence))
+            )
+        except Exception:  # noqa: BLE001
+            return None
         if verdict is None:
             return None
         return {
-            "memory": c["candidate_memory"],
-            "evidence": evidence,
+            "memory": candidate,
+            "evidence": evidence[:3000],
             "label": verdict,
-            "source": "heuristic",
+            "source": "generated",
         }
 
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        labeled += [r for r in ex.map(label, pool) if r is not None]
+        labeled += [r for r in ex.map(make, episodes) if r is not None]
 
-    print(f"labeled: {len(labeled)} ({Counter(r['label']['tier'] for r in labeled)})")
+    print(f"labeled: {len(labeled)} ({Counter(r['label']['tier'] for r in labeled)})", flush=True)
 
-    # Stratified train/test split by tier (stable hash on memory text).
     by_tier: dict[str, list[dict]] = {}
     for r in labeled:
         by_tier.setdefault(r["label"]["tier"], []).append(r)
@@ -116,22 +112,16 @@ def main() -> None:
     def dump(name: str, rows: list[dict], as_sft: bool) -> None:
         with (out / name).open("w", encoding="utf-8") as f:
             for r in rows:
-                if as_sft:
-                    f.write(
-                        json.dumps(
-                            {
-                                "messages": worthiness_messages(
-                                    r["memory"], r["evidence"], r["label"]
-                                ),
-                                "tier": r["label"]["tier"],
-                                "source": r["source"],
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-                else:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                obj = (
+                    {
+                        "messages": worthiness_messages(r["memory"], r["evidence"], r["label"]),
+                        "tier": r["label"]["tier"],
+                        "source": r["source"],
+                    }
+                    if as_sft
+                    else r
+                )
+                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     dump("trainset.jsonl", train, as_sft=True)
     dump("testset.jsonl", test, as_sft=True)
@@ -143,6 +133,7 @@ def main() -> None:
                 "n_train": len(train),
                 "n_test": len(test),
                 "labeler": args.labeler_model,
+                "proposer": args.propose_model,
                 "train_tiers": dict(Counter(r["label"]["tier"] for r in train)),
                 "test_tiers": dict(Counter(r["label"]["tier"] for r in test)),
             },
