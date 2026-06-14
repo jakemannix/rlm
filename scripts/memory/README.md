@@ -28,3 +28,89 @@ Notes:
 - `tests/test_linear_store.py`, `tests/test_episodes.py`, `tests/test_trainer_toy.py`
   run on CPU with no model and must stay green; the toy trainer test is the offline
   replica of the 2b gate (+8.1 nats lift, top-5 = 1.0 in ~6 s).
+
+## Modal GPU runs
+
+`scripts/memory/modal_gpu.py` runs the same ladder on Modal with persistent
+Volumes for cache/run artifacts and the Hugging Face model cache. It is meant
+to replace Colab cells when a run should be headless or needs a larger GPU than
+an L4.
+
+Local setup:
+
+```bash
+uv pip install -e ".[modal]"
+modal setup
+
+# Recommended for gated Gemma checkpoints:
+modal secret create huggingface-secret HF_TOKEN="$HF_TOKEN"
+export RLM_MODAL_HF_SECRET=huggingface-secret
+```
+
+If you do not set `RLM_MODAL_HF_SECRET`, the runner copies local
+`HF_TOKEN`, `HF_HUB_TOKEN`, or `HF_API_KEY` into the remote container; `HF_API_KEY`
+is aliased to the Hugging Face variable names expected by `transformers`.
+
+Defaults:
+
+| Setting | Default | Override |
+|---|---|---|
+| Modal app | `rlm-memory-gpu` | `RLM_MODAL_APP` |
+| GPU | `L4` | `RLM_MODAL_GPU=H100`, `A100-80GB`, `H100:8`, or `H100,A100-80GB,L40S` |
+| Artifacts volume | `rlm-memory-artifacts` mounted at `/vol/rlm` | `RLM_MODAL_ARTIFACT_VOLUME` |
+| HF cache volume | `rlm-hf-cache` mounted at `/root/.cache/huggingface` | `RLM_MODAL_HF_CACHE_VOLUME` |
+| Timeout | 24 h | `RLM_MODAL_TIMEOUT` seconds |
+
+Smoke-check CUDA:
+
+```bash
+modal run scripts/memory/modal_gpu.py --job gpu-report
+```
+
+Smoke-check Hugging Face auth and metadata access for `--model` without
+printing the token:
+
+```bash
+modal run scripts/memory/modal_gpu.py --job hf-report
+```
+
+Run the full Step 0 → 2c ladder on one H100:
+
+```bash
+RLM_MODAL_GPU=H100 modal run scripts/memory/modal_gpu.py \
+  --job acceptance-ladder \
+  --episodes 20000 \
+  --steps 4000 \
+  --d-k 512 \
+  --lambda-kl 0.5
+```
+
+The combined ladder commits outputs after every step and stops immediately if
+Step 0, Step 1, A1, or A4 fails its JSON gate.
+
+Run steps separately:
+
+```bash
+modal run scripts/memory/modal_gpu.py --job build-cache --episodes 20000
+modal run scripts/memory/modal_gpu.py --job train-skill --steps 4000 --d-k 512
+modal run scripts/memory/modal_gpu.py --job eval-acceptance --a3 1,2,4,8,16,32,64,128
+```
+
+Run a custom command from the repo root inside the same image/volumes:
+
+```bash
+modal run scripts/memory/modal_gpu.py --job command \
+  --command "python scripts/memory/train_skill.py --cache /vol/rlm/cache/gemma1b_v1 --out /vol/rlm/runs/skill_lr01.pt --lambda-kl 0.1"
+```
+
+Fetch artifacts:
+
+```bash
+modal volume ls rlm-memory-artifacts /runs
+modal volume get rlm-memory-artifacts /runs/acceptance.json runs/modal_acceptance.json
+```
+
+Requesting `H100:8` or another multi-GPU shape reserves that hardware on one
+Modal container, but the current memory scripts are still single-process and
+use one CUDA device. Use multi-GPU reservations only for jobs whose command
+actually launches distributed training (`torchrun`, `accelerate launch`, etc.).
