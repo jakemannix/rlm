@@ -1,0 +1,18 @@
+{
+  "base_model": "Qwen/Qwen3-8B",
+  "n_test": 70,
+  "finetuned_Qwen3-8B": {
+    "n_parsed": 70,
+    "balanced_accuracy": 0.48,
+    "keep_f1": 0.814,
+    "keep_recall": 0.96,
+    "reject_recall": 0.0
+  },
+  "zeroshot_qwen3.6-35b-a3b": {
+    "n_parsed": 70,
+    "balanced_accuracy": 0.485,
+    "keep_f1": 0.8,
+    "keep_recall": 0.92,
+    "reject_recall": 0.05
+  }
+}

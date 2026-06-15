@@ -2,6 +2,22 @@
 
 This guide covers best practices for contributing to the core Recursive Language Models `rlm` library and developing new environments (in `rlm/environments/`) and LM clients (in `rlm/clients/`).
 
+## Current focus: sleep-time / lesson-centric behavioral memory
+
+Active work is the **sleep-time consolidation** track in `rlm/sleep/`: curate
+behavioral "lessons" from a user's chat history, SFT a small model on them, and
+measure whether its *behavior* changes. **Start here:** `rlm/sleep/README.md`
+(plain-language intro) → `docs/memory_experiment_status.md` (full running log +
+current plan) → `docs/lesson_taxonomy.md` (the lesson index). Code lives in
+`rlm/sleep/` and `scripts/sleep/`.
+
+> There is a **separate, currently-inactive** research line in this repo — the
+> **parametric-memory** track (a frozen base + a meta-trained adapter + a mutable
+> store; Titans/Miras/linear-store + capacity theory), oriented by
+> `docs/memory_START_HERE.md` and living in `rlm/memory/`. Its docs carry a scope
+> banner. Don't confuse the two: behavioral-SFT-on-lessons (active) vs.
+> persistent-parametric-store-on-a-frozen-base (parked).
+
 ## Setup
 
 We use `uv` for developing `rlm`.

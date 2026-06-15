@@ -123,6 +123,22 @@ export PRIME_API_KEY=...
 ### Model Providers
 We currently support most major clients (OpenAI, Anthropic), as well as the router platforms (OpenRouter, Portkey). For local models, we recommend using vLLM (which interfaces with the [OpenAI client](https://github.com/alexzhang13/rlm/blob/main/rlm/clients/openai.py)). To view or add support for more clients, start by looking at [`rlm/clients/`](https://github.com/alexzhang13/rlm/tree/main/rlm/clients).
 
+### Titans / Miras Parametric Memory (*requires `pip install 'rlms[titans]'`*)
+The `titans_hf` backend wraps a local Hugging Face causal LM (Gemma 3 1B-IT by default) with a **Titans** / **Miras** neural long-term memory module that learns at test time via online gradient updates on a small memory MLP.  See [`docs/titans_memory.md`](docs/titans_memory.md) for the math and architecture, [`notebooks/`](notebooks/) for three Colab walkthroughs, and [`scripts/benchmarks/`](scripts/benchmarks/) for the bench suite (reasoning, tool use, codegen, long-context recall).
+
+```python
+from rlm import RLM
+from rlm.memory import MemoryConfig
+rlm = RLM(
+    backend="titans_hf",
+    backend_kwargs={
+        "model_name": "google/gemma-3-1b-it",
+        "memory_config": MemoryConfig(hidden_dim=512, n_layers=2),
+        "flavor": "titans",        # or "miras"
+    },
+)
+```
+
 ## Relevant Reading
 * **[Dec '25]** [Recursive Language Models arXiv](https://arxiv.org/abs/2512.24601)
 * **[Oct '25]** [Recursive Language Models Blogpost](https://alexzhang13.github.io/blog/2025/rlm/)
