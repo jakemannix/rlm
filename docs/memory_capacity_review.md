@@ -1,3 +1,5 @@
+> **Scope:** part of the *parametric-memory* track (frozen-base + meta-trained adapter + mutable store) — a SEPARATE line from the active sleep-time / lesson-centric behavioral-memory work (see rlm/sleep/README.md, docs/memory_experiment_status.md).
+
 # Review of `memory_capacity.md`: corrections verified, attribution fixed, the decade plan
 
 > Fable, 2026-06-XX. I re-ran the contested probes under harsher protocols before

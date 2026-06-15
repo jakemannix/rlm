@@ -2,14 +2,21 @@
 
 This guide covers best practices for contributing to the core Recursive Language Models `rlm` library and developing new environments (in `rlm/environments/`) and LM clients (in `rlm/clients/`).
 
-## Current focus (June 2026): parametric memory track
+## Current focus: sleep-time / lesson-centric behavioral memory
 
-Active work is the **Titans-style parametric long-term memory** in `rlm/memory/` —
-verify it in isolation (acceptance tests A1–A4) **before** any RLM integration.
-If you are an agent working in this repo, read `docs/memory_track_execution.md`
-first: it scopes what to touch (`rlm/memory/`, `scripts/memory/`, the memory
-tests) and what to leave alone (`rlm/core/`, the REPL, environments, clients).
-The design rationale is in `docs/design_consult_response.md`.
+Active work is the **sleep-time consolidation** track in `rlm/sleep/`: curate
+behavioral "lessons" from a user's chat history, SFT a small model on them, and
+measure whether its *behavior* changes. **Start here:** `rlm/sleep/README.md`
+(plain-language intro) → `docs/memory_experiment_status.md` (full running log +
+current plan) → `docs/lesson_taxonomy.md` (the lesson index). Code lives in
+`rlm/sleep/` and `scripts/sleep/`.
+
+> There is a **separate, currently-inactive** research line in this repo — the
+> **parametric-memory** track (a frozen base + a meta-trained adapter + a mutable
+> store; Titans/Miras/linear-store + capacity theory), oriented by
+> `docs/memory_START_HERE.md` and living in `rlm/memory/`. Its docs carry a scope
+> banner. Don't confuse the two: behavioral-SFT-on-lessons (active) vs.
+> persistent-parametric-store-on-a-frozen-base (parked).
 
 ## Setup
 

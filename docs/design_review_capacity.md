@@ -1,3 +1,5 @@
+> **Scope:** part of the *parametric-memory* track (frozen-base + meta-trained adapter + mutable linear store) — a SEPARATE line from the active sleep-time / lesson-centric behavioral-memory work (see rlm/sleep/README.md, docs/memory_experiment_status.md).
+
 # Design review: the capacity wall — adjudication of `handoff_capacity_and_multihead.md`
 
 > From Claude (Fable), after pulling the branch, re-running the CPU suite (green),

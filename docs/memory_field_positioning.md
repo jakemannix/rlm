@@ -1,3 +1,5 @@
+> **Scope:** part of the *parametric-memory* track (frozen-base + meta-trained adapter + mutable neural store + persistent writes across sessions) — a SEPARATE line from the active sleep-time / lesson-centric behavioral-memory work (see rlm/sleep/README.md, docs/memory_experiment_status.md). Though §8 endorses pivoting to the sleep-lesson approach, this doc's primary contribution is establishing the intellectual case for the parametric-memory design space.
+
 # Field positioning: why the design point this repo occupies is empty
 
 > **Status: literature positioning + research-program justification (2026-06).**

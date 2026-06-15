@@ -388,3 +388,88 @@ Honest **caveats** (do not overstate):
 `max_tokens` cap or it 402s on a low balance (fixed in `OpenAIClient`); `all-linear`
 LoRA OOMs/crawls on large MoE — use attention-only there. See the
 `openrouter-and-moe-lora-gotchas` memory.
+
+---
+
+# Phase F — lesson-centric reframe + within-lesson validation (2026-06-14)
+
+## Why we reframed (Phase E was the wrong instrument)
+
+Phase E's held-out-memory transfer (+6–11pp, scaling with size) was real but
+measured the **wrong thing**. The memory text is **never in the prompt** (neither
+training nor eval), so any held-out gain can only be a learned **disposition
+prior**, not memory-conditional recall. And transfer only happened because the 71
+"held-out memories" aren't different things — they collapse onto a handful of
+recurring dispositions that the training set also hammers. So Phase E measured
+**generic disposition uptake (≈ instruction tuning), not consolidation of specific
+memories**, and "transfer to held-out memories" oversold it.
+
+The fix: relabel the unit of analysis from **"memory" → "lesson"**. Tag every
+memory with a hidden lesson label; build **within-lesson** hold-out splits (train
+on some instances of lesson L, test on *held-out instances of L*) and per-lesson
+learning curves; add a **leave-one-lesson-out ablation** to separate "learned
+lesson L" from "got generically better."
+
+## The lesson taxonomy (`docs/lesson_taxonomy.md`)
+
+All 626 memories tagged by **Opus sub-agents** (a deliberate *pristine-data
+high-water-mark* — establish whether the approach works with best-possible labels
+before scaling to cheaper taggers) into a nested taxonomy: **16 coarse (l1) / 68
+medium (l2) / 234 fine (l3)** + 14 domains + a disposition/content flag. **552
+disposition / 74 content.** Usable signal lives at **l1 (every lesson ≥19
+instances)** and the **l2 head (~29 lessons ≥10)**; l3 is too sparse (median 2).
+Data: `docs/data/lesson_taxonomy.json`, `docs/data/lesson_tags.jsonl`.
+
+## First validation — 7B within-lesson uptake (RunPod A40)
+
+Trained **Olmo-3-7B-Instruct** (LoRA all-linear, 3 seeds) on **387** within-lesson
+train instances; evaluated on **168 held-out instances of the SAME 16 l1 lessons**.
+Graded by **Opus sub-agents** (blinded behavior + win-rate) — the pristine grader,
+**not** the OpenRouter judge (grader quality is load-bearing; a weak grader gave a
+false +9pp in Phase A2).
+
+**Overall: base 0.26 → adapted 0.61 (+35.7pp); blind win-rate 0.72 (105–40);
+negative control clean (over-application 0.033 → 0.000).** That's ~4× the Phase-E
+cross-lesson effect — within-lesson generalization is large and real.
+
+**Per-lesson confirms the theory — three buckets:**
+- **Dispositions transfer strongly:** precise-distinctions +100, quantitative-rigor
+  +90, interaction-discipline +88, intellectual-pushback +60, step-by-step +60,
+  mechanism-rigor / options / explanatory-style +43.
+- **The content lesson does NOT transfer:** `contextual-tailoring` **+0** (applying
+  Jake's *specific facts* — you can't generalize a fact you never saw). Exactly as
+  predicted for the `content` kind.
+- **A real cost:** `voice-and-style` **−40pp** — disposition SFT homogenizes voice,
+  hurting "preserve Jake's style / avoid LLM tics."
+- **Hard/subtle lessons stay weak:** verification +19 (real verifying needs tools it
+  can't use at eval), epistemic-honesty +5.
+
+Caveats: Opus grader is primary (OpenRouter second-judge cross-check is a
+nice-to-have); seed-0 graded; a few lessons are small-n (voice 5, workflow 3); the
+within-lesson eval is "easier" than cross-lesson **by design** — that's the point.
+
+## Plan from here
+
+1. **Infra:** bake a RunPod **Docker image** (deps + `WANDB_API_KEY`) + a small
+   `runpod_gpu.py` runner; add `wandb.log` to the SFT loop in `rlm/sleep/lora.py`.
+   Stops the per-pod reinstall/whack-a-mole; gives live tracking. (See the
+   `runpod-gpu-mechanics` memory.)
+2. **13B point:** Mistral-Nemo-12B (clean non-thinking dense) on the image, with
+   wandb — confirm the effect holds/strengthens at 13B.
+3. **The real experiment:** the **{lesson × #instances × leave-one-lesson-out}**
+   learning-curve + ablation at l1 (and the l2 head). The ablation separates
+   *specific learning* from generic uplift; the learning curve shows how many
+   instances per lesson are needed before a lesson reliably installs.
+4. **Follow-ups the per-lesson view surfaced:** (a) the **voice-and-style
+   regression** — does disposition SFT trade off style preservation? a targeted
+   probe; (b) **verification / epistemic-honesty weakness** — unlearnable via plain
+   SFT, or do they need tools / CoT / preference data? (c) the **content 14%** —
+   route to a different method (in-context, or knowledge-editing); don't pool it into
+   the curve.
+5. **Then scale down:** smaller policies + cheaper taggers/graders, measuring how
+   much quality degrades from the pristine Opus high-water-mark.
+
+> **Where to start (fresh reader):** `rlm/sleep/README.md` (what this is, plain
+> language) → this doc (full running log + plan) → `docs/lesson_taxonomy.md` (the
+> lesson index). This is the **active** track. The `docs/memory_START_HERE.md`
+> /capacity/Titans docs are a **separate** parametric-memory line — see their banners.

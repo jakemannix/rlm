@@ -1,3 +1,5 @@
+> **Scope:** part of the *parametric-memory* track (frozen-base + meta-trained adapter + mutable store) — a SEPARATE line from the active sleep-time / lesson-centric behavioral-memory work (see rlm/sleep/README.md, docs/memory_experiment_status.md).
+
 # Design consult: persistent parametric memory on a *frozen* LLM
 
 > **Status: working brief, not authority.** This is a request-for-design written by

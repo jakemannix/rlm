@@ -99,10 +99,27 @@ person's history, so they share a flavor with the training ones. The full,
 calibrated write-up — numbers, statistics, and caveats — is in
 **`docs/memory_experiment_status.md`** (see the "Phase E" section).
 
+### Latest: the "lesson" reframe (this is the active frontier)
+
+Looking closer, that cross-memory result was the *wrong measurement*: the memory
+text is never in the prompt, and the held-out memories aren't really different —
+they collapse onto a handful of recurring **dispositions** (verify, push back, be
+precise). So we relabeled the unit from "memory" to **"lesson"**, tagged all 626
+memories at multiple granularities (`docs/lesson_taxonomy.md`), and tested
+**within-lesson** generalization (train on some instances of a lesson, test on
+held-out instances of the *same* lesson). On a 7B that gives a **much** larger,
+cleaner effect — **+36 points** behavior, win-rate 0.72 — and the per-lesson view
+is the real prize: dispositions transfer strongly, the one *content* lesson
+doesn't transfer at all (as predicted), and style/voice actually *regresses*. Full
+story + plan: **`docs/memory_experiment_status.md`** ("Phase F").
+
 ## Where to look
 
 - **`docs/memory_experiment_status.md`** — the detailed experiment log and the
   calibrated conclusion. Start here for the real numbers.
+- **`docs/lesson_taxonomy.md`** + **`docs/data/lesson_tags.jsonl`** — the lesson
+  taxonomy (16/68/234 nested) every memory is tagged against; the basis for the
+  current within-lesson experiments.
 - **`docs/sleep_consolidation.md`** — the mechanism/design of the consolidation
   loop (gate → judge → train → eval).
 - **`docs/figures/breadth_size_sweep.png`**, **`docs/data/breadth_size_sweep_2026-06-13.csv`**

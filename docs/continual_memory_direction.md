@@ -1,3 +1,5 @@
+> **Scope:** part of the *parametric-memory* track (frozen-base + meta-trained adapter + mutable store) — a SEPARATE line from the active sleep-time / lesson-centric behavioral-memory work (see rlm/sleep/README.md, docs/memory_experiment_status.md).
+
 # Direction proposal: continual parametric memory (semantic, not episodic)
 
 > **For a fresh review (Fable).** Read `docs/memory_START_HERE.md` first for the full

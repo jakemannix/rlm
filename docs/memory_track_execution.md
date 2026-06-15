@@ -1,3 +1,5 @@
+> **Scope:** part of the *parametric-memory* track (frozen base + meta-trained adapter + mutable store) — a SEPARATE line from the active sleep-time / lesson-centric behavioral-memory work (see rlm/sleep/README.md, docs/memory_experiment_status.md).
+
 # Memory-track execution brief (for the Claude Code session)
 
 You are executing the plan in `docs/design_consult_response.md` against the starter

@@ -1,3 +1,5 @@
+> **Scope:** Part of the *parametric-memory* track (frozen-base + meta-trained adapter + mutable store) — a SEPARATE line from the active sleep-time / lesson-centric behavioral-memory work (see rlm/sleep/README.md, docs/memory_experiment_status.md).
+
 # Memory track — START HERE (orientation for a fresh reader)
 
 > Entry point for anyone (esp. a fresh Fable context) picking up the `rlm/memory` work

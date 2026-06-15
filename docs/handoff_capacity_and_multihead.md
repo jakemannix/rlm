@@ -1,3 +1,5 @@
+> **Scope:** part of the *parametric-memory* track (frozen-base + meta-trained adapter + mutable linear delta-rule store) — a SEPARATE line from the active sleep-time / lesson-centric behavioral-memory work (see rlm/sleep/README.md, docs/memory_experiment_status.md).
+
 # Handoff: frozen-base memory — status, the capacity wall, and a challenge to the multi-head plan
 
 > **Status: working brief for a design review (Fable).** Self-contained; the repo is at
